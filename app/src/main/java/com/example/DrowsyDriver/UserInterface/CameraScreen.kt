@@ -20,9 +20,14 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.Button
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.navigation.NavController
+import androidx.compose.foundation.layout.systemBarsPadding
+
 
 @Composable
-fun CameraScreen() {
+fun CameraScreen(navController: NavController) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -61,9 +66,9 @@ fun CameraScreen() {
 
     Box(modifier = Modifier.fillMaxSize()) {
 
-        if (permissionGranted) {
+         if (permissionGranted) {
             AndroidView(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().systemBarsPadding(),
                 factory = { ctx ->
                     PreviewView(ctx).apply {
                          scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -100,11 +105,22 @@ fun CameraScreen() {
             )
         } else {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().systemBarsPadding(),
                 contentAlignment = Alignment.Center
             ) {
                 Text("Camera permission is needed to show preview.")
             }
+        }
+
+        Button(
+            onClick = { navController.navigate("data_collection") },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+                .systemBarsPadding(),
+            shape = RoundedCornerShape(14.dp) // <-- Error here without import
+        ) { // <-- Error here without import
+            Text("Session Data")
         }
 
         // Overlay status panel on top of camera preview
@@ -113,6 +129,7 @@ fun CameraScreen() {
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(16.dp)
+                .systemBarsPadding()
         )
     }
 }

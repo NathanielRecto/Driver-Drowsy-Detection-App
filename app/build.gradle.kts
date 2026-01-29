@@ -6,14 +6,12 @@ plugins {
 
 android {
     namespace = "com.example.DrowsyDriver"
-    compileSdk {
-        version = release(36)
-    }
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.example.firstapp"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 
@@ -43,6 +41,7 @@ android {
 
 dependencies {
     val cameraxVersion = "1.3.4"
+    implementation("androidx.navigation:navigation-compose:2.7.2")
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
