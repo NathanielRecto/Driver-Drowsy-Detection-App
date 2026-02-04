@@ -37,7 +37,9 @@ class MainActivity : ComponentActivity() {
                         CameraScreen(navController)
                     }
                     composable("data_collection"){
-                        DataCollectionScreen {navController}
+                        DataCollectionScreen(
+                            onBack = { navController.popBackStack()}
+                        )
                     }
 
                 }

@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.border
 
 data class ExtractionUiState(
     val headTiltDeg: Float = 0f,
@@ -64,7 +65,7 @@ fun StatusPanel(
 
         Spacer(Modifier.height(6.dp))
 
-        // Row 3: Eyes Closed (left) + EAR (right)  ✅ same line
+        // Row 3: Eyes Closed (left) + EAR (right)   same line
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
                 text = "Eyes Closed: ${state.eyesClosedSec} sec",
@@ -86,10 +87,25 @@ fun StatusPanel(
                 .fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
+            val isDrowsy = state.status.equals("Drowsy", ignoreCase = true)
+
+            val bubbleBg =
+                if (isDrowsy) Color.Red.copy(alpha = 0.45f)
+                else Color.DarkGray.copy(alpha = 0.45f)
+
+            val bubbleBorder =
+                if (isDrowsy) Color.Red.copy(alpha = 0.95f)
+                else Color.Transparent
+
             Box(
                 modifier = Modifier
+                    .border(
+                        width = if (isDrowsy) 2.dp else 0.dp,
+                        color = bubbleBorder,
+                        shape = RoundedCornerShape(14.dp)
+                    )
                     .background(
-                        color = Color.DarkGray.copy(alpha = 0.45f), // “grayer bubble”
+                        color = bubbleBg,
                         shape = RoundedCornerShape(14.dp)
                     )
                     .padding(horizontal = 22.dp, vertical = 10.dp)
@@ -100,6 +116,7 @@ fun StatusPanel(
                     color = Color.White
                 )
             }
+
         }
     }
 }
