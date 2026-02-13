@@ -32,7 +32,6 @@ import java.util.concurrent.Executors
 import com.example.DrowsyDriver.extraction.FaceExtractionEngine
 import com.example.DrowsyDriver.extraction.FaceExtractionEngine.NormRect
 
-// 👇 ADD THESE HERE (file-level constants)
 private const val EAR_CLOSED_TH = 0.10f
 private const val MAR_YAWN_TH = 0.50f
 
@@ -69,6 +68,9 @@ fun CameraScreen(navController: NavController) {
         )
     }
 
+    // ✅ Toggle for debugging boxes
+    var showBoxes by remember { mutableStateOf(false) }
+
     // For correct mapping
     var imageW by remember { mutableStateOf(1) }
     var imageH by remember { mutableStateOf(1) }
@@ -94,10 +96,8 @@ fun CameraScreen(navController: NavController) {
                 rightEyeBox = res.rightEyeBox
                 mouthBox = res.mouthBox
 
-                val statusNow = if (res.ear < EAR_CLOSED_TH || res.mar > MAR_YAWN_TH)
-                    "Drowsy"
-                else
-                    "Normal"
+                val statusNow =
+                    if (res.ear < EAR_CLOSED_TH || res.mar > MAR_YAWN_TH) "Drowsy" else "Normal"
 
                 uiState.value = uiState.value.copy(
                     ear = res.ear,
@@ -165,46 +165,50 @@ fun CameraScreen(navController: NavController) {
                 }
             )
 
-            // ✅ Green boxes overlay
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                if (imageW <= 1 || imageH <= 1) return@Canvas
+            // ✅ Draw boxes ONLY when showBoxes is true
+            if (showBoxes) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    if (imageW <= 1 || imageH <= 1) return@Canvas
 
-                val imgWf = imageW.toFloat()
-                val imgHf = imageH.toFloat()
+                    val imgWf = imageW.toFloat()
+                    val imgHf = imageH.toFloat()
 
-                // Center-crop mapping to match PreviewView.FILL_CENTER
-                val scale = maxOf(size.width / imgWf, size.height / imgHf)
-                val offsetX = (size.width - imgWf * scale) / 2f
-                val offsetY = (size.height - imgHf * scale) / 2f
+                    // Center-crop mapping to match PreviewView.FILL_CENTER
+                    val scale = maxOf(size.width / imgWf, size.height / imgHf)
+                    val offsetX = (size.width - imgWf * scale) / 2f
+                    val offsetY = (size.height - imgHf * scale) / 2f
 
-                val mirrorOverlay = true
+                    // If your extraction already mirrors the bitmap for front camera,
+                    // keep this false. If preview behaves like a selfie mirror, set true.
+                    val mirrorOverlay = false
 
-                fun drawNormRect(r: NormRect?, stroke: Float) {
-                    if (r == null) return
+                    fun drawNormRect(r: NormRect?, stroke: Float) {
+                        if (r == null) return
 
-                    val lN = if (mirrorOverlay) (1f - r.right) else r.left
-                    val rN = if (mirrorOverlay) (1f - r.left) else r.right
-                    val tN = r.top
-                    val bN = r.bottom
+                        // ✅ Use lN/rN (your previous code calculated but didn't use)
+                        val lN = if (mirrorOverlay) (1f - r.right) else r.left
+                        val rN = if (mirrorOverlay) (1f - r.left) else r.right
+                        val tN = r.top
+                        val bN = r.bottom
 
-                    val left = r.left * imgWf * scale + offsetX
-                    val top = r.top * imgHf * scale + offsetY
-                    val right = r.right * imgWf * scale + offsetX
-                    val bottom = r.bottom * imgHf * scale + offsetY
+                        val left = lN * imgWf * scale + offsetX
+                        val top = tN * imgHf * scale + offsetY
+                        val right = rN * imgWf * scale + offsetX
+                        val bottom = bN * imgHf * scale + offsetY
 
-                    drawRect(
-                        color = Color(0xFF00FF00),
-                        topLeft = Offset(left, top),
-                        size = Size(right - left, bottom - top),
-                        style = Stroke(width = stroke)
-                    )
+                        drawRect(
+                            color = Color(0xFF00FF00),
+                            topLeft = Offset(left, top),
+                            size = Size(right - left, bottom - top),
+                            style = Stroke(width = stroke)
+                        )
+                    }
+
+                    drawNormRect(faceBox, stroke = 4f)
+                    drawNormRect(leftEyeBox, stroke = 3f)
+                    drawNormRect(rightEyeBox, stroke = 3f)
+                    drawNormRect(mouthBox, stroke = 3f)
                 }
-
-                // Face big box, eyes + mouth smaller boxes
-                drawNormRect(faceBox, stroke = 4f)
-                drawNormRect(leftEyeBox, stroke = 3f)
-                drawNormRect(rightEyeBox, stroke = 3f)
-                drawNormRect(mouthBox, stroke = 3f)
             }
 
         } else {
@@ -218,6 +222,19 @@ fun CameraScreen(navController: NavController) {
             }
         }
 
+        // ✅ Top-left toggle button
+        Button(
+            onClick = { showBoxes = !showBoxes },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+                .systemBarsPadding(),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Text(if (showBoxes) "Hide Boxes" else "Show Boxes")
+        }
+
+        // Top-right button
         Button(
             onClick = { navController.navigate("data_collection") },
             modifier = Modifier
