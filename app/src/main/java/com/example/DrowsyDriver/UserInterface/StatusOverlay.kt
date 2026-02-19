@@ -14,7 +14,7 @@ import androidx.compose.foundation.border
 
 data class ExtractionUiState(
     val headTiltDeg: Float = 0f,
-    val yawnDeg: Float = 0f,
+    val score: Float = 0f,
     val eyesClosedSec: Float = 0f,
     val mar: Float = 0f,
     val ear: Float = 0f,
@@ -56,7 +56,7 @@ fun StatusPanel(
         // Row 2: Yawn (left)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
-                text = "Yawn: ${state.yawnDeg}°",
+                text = "Score: ${state.score}°",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.White
             )

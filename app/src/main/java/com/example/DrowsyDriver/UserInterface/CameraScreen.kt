@@ -27,6 +27,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
+import com.example.DrowsyDriver.Detection
+import com.example.DrowsyDriver.DrowsinessProcessor
 import java.util.concurrent.Executors
 
 import com.example.DrowsyDriver.extraction.FaceExtractionEngine
@@ -60,7 +62,7 @@ fun CameraScreen(navController: NavController) {
         mutableStateOf(
             ExtractionUiState(
                 headTiltDeg = 0f,
-                yawnDeg = 0f,
+                score = 0f,
                 eyesClosedSec = 0f,
                 mar = 0f,
                 ear = 0f,
@@ -80,7 +82,7 @@ fun CameraScreen(navController: NavController) {
     var mouthBox by remember { mutableStateOf<NormRect?>(null) }
 
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-
+    val drowsinessProcessor = remember(context) { DrowsinessProcessor(context) }
     val engine = remember(context) {
         FaceExtractionEngine(
             context = context,
@@ -93,16 +95,15 @@ fun CameraScreen(navController: NavController) {
                 leftEyeBox = res.leftEyeBox
                 rightEyeBox = res.rightEyeBox
                 mouthBox = res.mouthBox
-
-                val statusNow = if (res.ear < EAR_CLOSED_TH || res.mar > MAR_YAWN_TH)
-                    "Drowsy"
-                else
-                    "Normal"
+                //Pass the frame & extraction to DrowsinessProcessor
+                drowsinessProcessor.handleFaceResult(res)
+                val statusNow = if (Detection.shouldTriggerAlarm()) "Drowsy" else "Normal"
 
                 uiState.value = uiState.value.copy(
                     ear = res.ear,
                     mar = res.mar,
                     headTiltDeg = res.headTiltDeg,
+                    score = Detection.score,
                     status = statusNow
                 )
             }
@@ -111,10 +112,14 @@ fun CameraScreen(navController: NavController) {
 
     DisposableEffect(permissionGranted) {
         if (permissionGranted) {
-            try { engine.start() } catch (t: Throwable) { t.printStackTrace() }
+            try {
+                engine.start()
+                drowsinessProcessor.start()
+            } catch (t: Throwable) { t.printStackTrace() }
         }
         onDispose {
             engine.stop()
+            drowsinessProcessor.stop()
             analysisExecutor.shutdown()
         }
     }

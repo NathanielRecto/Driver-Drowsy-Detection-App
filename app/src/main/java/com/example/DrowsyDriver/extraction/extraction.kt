@@ -29,9 +29,10 @@ class FaceExtractionEngine(
         val faceBox: NormRect,
         val leftEyeBox: NormRect,
         val rightEyeBox: NormRect,
-        val mouthBox: NormRect
+        val mouthBox: NormRect,
+        val frameBitmap: Bitmap?
     )
-
+    private var lastFrameBitmap: Bitmap? = null
     private var landmarker: FaceLandmarker? = null
     private var lastW = 1
     private var lastH = 1
@@ -77,7 +78,7 @@ class FaceExtractionEngine(
 
             val upright = raw.rotate(rotation)
             val finalBmp = if (isFrontCamera) upright.mirrorX() else upright
-
+            lastFrameBitmap = finalBmp
             lastW = finalBmp.width
             lastH = finalBmp.height
 
@@ -118,7 +119,8 @@ class FaceExtractionEngine(
                 faceBox = faceBox,
                 leftEyeBox = leftEyeBox,
                 rightEyeBox = rightEyeBox,
-                mouthBox = mouthBox
+                mouthBox = mouthBox,
+                frameBitmap = lastFrameBitmap
             )
         )
     }
