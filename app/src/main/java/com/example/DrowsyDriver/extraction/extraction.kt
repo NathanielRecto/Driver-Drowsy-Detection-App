@@ -29,6 +29,7 @@ class FaceExtractionEngine(
         val faceBox: NormRect,
         val leftEyeBox: NormRect,
         val rightEyeBox: NormRect,
+        val bothEyesBox: NormRect,  // combined left + right eye box
         val mouthBox: NormRect
     )
 
@@ -61,13 +62,6 @@ class FaceExtractionEngine(
         landmarker = null
     }
 
-    /**
-     * Reliable alignment strategy:
-     * - Convert ImageProxy -> Bitmap
-     * - Rotate bitmap to upright using rotationDegrees
-     * - Mirror horizontally for front camera (selfie preview)
-     * - Feed MediaPipe upright bitmap (no extra rotation options)
-     */
     fun analyze(imageProxy: ImageProxy, isFrontCamera: Boolean = true) {
         val lm = landmarker ?: run { imageProxy.close(); return }
 
@@ -93,32 +87,41 @@ class FaceExtractionEngine(
     private fun handleResult(result: FaceLandmarkerResult) {
         if (result.faceLandmarks().isEmpty()) return
 
-        val pts = result.faceLandmarks()[0].map { it.x() to it.y() } // normalized
+        val pts = result.faceLandmarks()[0].map { it.x() to it.y() }
+        // Pixel-space coords — used for EAR/MAR/tilt so aspect ratio doesn't squish values
+        val ptsPx = result.faceLandmarks()[0].map { it.x() * lastW to it.y() * lastH }
 
-        val ear = round2(computeAvgEar(pts))
-        val mar = round2(computeMar(pts))
-        val tilt = round2(computeHeadTiltRollDeg(pts))
+        val ear  = round2(computeAvgEar(ptsPx))
+        val mar  = round2(computeMar(ptsPx))
+        val tilt = round2(computeHeadTiltRollDeg(ptsPx))
 
-        // tighter boxes
-        val faceBox = boxFromIndices(pts, FACE_OVAL).padRelative(0.06f)
-        val leftEyeBox = boxFromIndices(pts, LEFT_EYE_TIGHT).padRelative(0.15f)
+        val faceBox     = boxFromIndices(pts, FACE_OVAL).padRelative(0.06f)
+        val leftEyeBox  = boxFromIndices(pts, LEFT_EYE_TIGHT).padRelative(0.15f)
         val rightEyeBox = boxFromIndices(pts, RIGHT_EYE_TIGHT).padRelative(0.15f)
-        val mouthBox = boxFromIndices(pts, MOUTH_TIGHT)
+        val mouthBox    = boxFromIndices(pts, MOUTH_TIGHT)
             .padRelative(0.08f)
-            .shiftY(-0.02f)   // ✅ move box slightly up
+            .shiftY(-0.02f)
 
+        // Merge left + right eye into one combined box
+        val bothEyesBox = NormRect(
+            left   = minOf(leftEyeBox.left,   rightEyeBox.left),
+            top    = minOf(leftEyeBox.top,     rightEyeBox.top),
+            right  = maxOf(leftEyeBox.right,   rightEyeBox.right),
+            bottom = maxOf(leftEyeBox.bottom,  rightEyeBox.bottom)
+        )
 
         onResult(
             ExtractionResult(
-                ear = ear,
-                mar = mar,
+                ear         = ear,
+                mar         = mar,
                 headTiltDeg = tilt,
-                imageWidth = lastW,
+                imageWidth  = lastW,
                 imageHeight = lastH,
-                faceBox = faceBox,
-                leftEyeBox = leftEyeBox,
+                faceBox     = faceBox,
+                leftEyeBox  = leftEyeBox,
                 rightEyeBox = rightEyeBox,
-                mouthBox = mouthBox
+                bothEyesBox = bothEyesBox,
+                mouthBox    = mouthBox
             )
         )
     }
@@ -126,28 +129,24 @@ class FaceExtractionEngine(
     // ---------- features ----------
     private fun computeAvgEar(pts: List<Pair<Float, Float>>): Float {
         fun earFor(p1: Int, p2: Int, p3: Int, p4: Int, p5: Int, p6: Int): Float {
-            val (x1, y1) = pts[p1]
-            val (x2, y2) = pts[p2]
-            val (x3, y3) = pts[p3]
-            val (x4, y4) = pts[p4]
-            val (x5, y5) = pts[p5]
-            val (x6, y6) = pts[p6]
+            val (x1, y1) = pts[p1]; val (x2, y2) = pts[p2]; val (x3, y3) = pts[p3]
+            val (x4, y4) = pts[p4]; val (x5, y5) = pts[p5]; val (x6, y6) = pts[p6]
             val a = dist(x2, y2, x6, y6)
             val b = dist(x3, y3, x5, y5)
             val c = dist(x1, y1, x4, y4)
             return if (c > 1e-6f) (a + b) / (2f * c) else 0f
         }
-        val left = earFor(33, 160, 158, 133, 153, 144)
+        val left  = earFor(33,  160, 158, 133, 153, 144)
         val right = earFor(362, 385, 387, 263, 373, 380)
         return (left + right) / 2f
     }
 
     private fun computeMar(pts: List<Pair<Float, Float>>): Float {
-        val (xU, yU) = pts[13]
-        val (xL, yL) = pts[14]
-        val (xLeft, yLeft) = pts[78]
+        val (xU, yU)         = pts[13]
+        val (xL, yL)         = pts[14]
+        val (xLeft, yLeft)   = pts[78]
         val (xRight, yRight) = pts[308]
-        val vertical = dist(xU, yU, xL, yL)
+        val vertical   = dist(xU, yU, xL, yL)
         val horizontal = dist(xLeft, yLeft, xRight, yRight)
         return if (horizontal > 1e-6f) vertical / horizontal else 0f
     }
@@ -169,67 +168,47 @@ class FaceExtractionEngine(
         var minX = 1f; var minY = 1f; var maxX = 0f; var maxY = 0f
         for (i in indices) {
             val (x, y) = pts[i]
-            if (x < minX) minX = x
-            if (y < minY) minY = y
-            if (x > maxX) maxX = x
-            if (y > maxY) maxY = y
+            if (x < minX) minX = x; if (y < minY) minY = y
+            if (x > maxX) maxX = x; if (y > maxY) maxY = y
         }
         return NormRect(
-            minX.coerceIn(0f, 1f),
-            minY.coerceIn(0f, 1f),
-            maxX.coerceIn(0f, 1f),
-            maxY.coerceIn(0f, 1f)
+            minX.coerceIn(0f, 1f), minY.coerceIn(0f, 1f),
+            maxX.coerceIn(0f, 1f), maxY.coerceIn(0f, 1f)
         )
     }
 
-    // padding based on box size (keeps it tight for different faces)
     private fun NormRect.padRelative(frac: Float): NormRect {
-        val w = (right - left).coerceAtLeast(1e-6f)
-        val h = (bottom - top).coerceAtLeast(1e-6f)
-        val px = w * frac
-        val py = h * frac
+        val w  = (right - left).coerceAtLeast(1e-6f)
+        val h  = (bottom - top).coerceAtLeast(1e-6f)
+        val px = w * frac; val py = h * frac
         return NormRect(
-            (left - px).coerceIn(0f, 1f),
-            (top - py).coerceIn(0f, 1f),
-            (right + px).coerceIn(0f, 1f),
-            (bottom + py).coerceIn(0f, 1f)
+            (left - px).coerceIn(0f, 1f), (top  - py).coerceIn(0f, 1f),
+            (right + px).coerceIn(0f, 1f), (bottom + py).coerceIn(0f, 1f)
         )
     }
+
     private fun NormRect.shiftY(delta: Float): NormRect {
         val t = (top + delta).coerceIn(0f, 1f)
         val b = (bottom + delta).coerceIn(0f, 1f)
-        // Keep height if we hit clamp
         val h = bottom - top
         return if (b - t < h * 0.5f) {
-            // fallback: preserve height best effort
             val newTop = (b - h).coerceIn(0f, 1f)
             NormRect(left, newTop, right, b)
         } else {
             NormRect(left, t, right, b)
         }
     }
+
     companion object {
-        // face oval
         private val FACE_OVAL = intArrayOf(
             10, 338, 297, 332, 284, 251, 389, 356, 454, 323,
             361, 288, 397, 365, 379, 378, 400, 377, 152, 148,
             176, 149, 150, 136, 172, 58, 132, 93, 234, 127,
             162, 21, 54, 103, 67, 109
         )
-
-        // tighter eye sets (corners + upper/lower lid points)
-        private val LEFT_EYE_TIGHT = intArrayOf(33, 133, 160, 158, 153, 144)
+        private val LEFT_EYE_TIGHT  = intArrayOf(33, 133, 160, 158, 153, 144)
         private val RIGHT_EYE_TIGHT = intArrayOf(263, 362, 385, 387, 373, 380)
-
-        // tighter mouth set (corners + upper/lower lip)
-        // Outer lips (covers full lips better)
-        private val MOUTH_TIGHT = intArrayOf(
-            61, 291,   // corners
-            0,         // upper lip top
-            17,        // lower lip bottom
-            82, 312,   // upper lip curve
-            87, 317    // lower lip curve
-        )
+        private val MOUTH_TIGHT = intArrayOf(61, 291, 0, 17, 82, 312, 87, 317)
     }
 }
 
@@ -249,7 +228,7 @@ private fun ImageProxy.toBitmapNv21(): Bitmap {
 
     val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
     val out = java.io.ByteArrayOutputStream()
-    yuvImage.compressToJpeg(Rect(0, 0, width, height), 90, out)
+    yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, out) // slightly lower quality = faster
     val bytes = out.toByteArray()
     return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
 }

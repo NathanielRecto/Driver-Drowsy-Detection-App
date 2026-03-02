@@ -1,91 +1,109 @@
 package com.example.DrowsyDriver.UserInterface
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.example.DrowsyDriver.session.SessionManager
 
 @Composable
 fun DataCollectionScreen(
     onBack: () -> Unit
 ) {
-    // Fake session values for now
-    val sessionDurationMin = 12
-    val totalEyeClosedSec = 34f
-    val yawnCount = 5
-    val avgEAR = 0.71f
-    val avgMAR = 0.23f
-    val drowsyEvents = 3
-    val sessionStatus = "MODERATE RISK"
+    val sessionDuration = SessionManager.getSessionDurationMinutes()
+    val eyeTime         = SessionManager.totalEyeClosedTime
+    val tiltTime        = SessionManager.totalHeadTiltTime
+    val yawns           = SessionManager.yawnCount
+    val drowsyEvents    = SessionManager.drowsyEvents
+    val frames          = SessionManager.framesProcessed
+    val events          = SessionManager.events
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
-            .systemBarsPadding(),
-        verticalArrangement = Arrangement.SpaceBetween
+            .windowInsetsPadding(WindowInsets.systemBars)
     ) {
-
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    color = Color.Black.copy(alpha = 0.05f),
-                    shape = RoundedCornerShape(18.dp)
-                )
-                .padding(16.dp)
-                .systemBarsPadding()
+            modifier            = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
 
-            Text(
-                text = "Session Summary",
-                style = MaterialTheme.typography.titleLarge
-            )
+            Column {
 
-            Spacer(Modifier.height(12.dp))
-
-            Text("Session Duration: $sessionDurationMin min")
-            Text("Total Eye Closure: $totalEyeClosedSec sec")
-            Text("Yawns Detected: $yawnCount")
-            Text("Average EAR: $avgEAR")
-            Text("Average MAR: $avgMAR")
-            Text("Drowsy Events: $drowsyEvents")
-
-            Spacer(Modifier.height(16.dp))
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .systemBarsPadding(),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .background(
-                            color = Color.DarkGray.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(14.dp)
-                        )
-                        .padding(horizontal = 24.dp, vertical = 12.dp)
+                // ── Session analytics card ─────────────────────────────────────
+                Card(
+                    shape    = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = "SESSION STATUS: $sessionStatus",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Column(Modifier.padding(16.dp)) {
+
+                        Text(
+                            "Session Analytics",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+
+                        Text("Session Duration: $sessionDuration min")
+                        Text("Frames Processed: $frames")
+                        Text("Total Eye Closed Time: ${"%.2f".format(eyeTime)} sec")
+                        Text("Total Head Tilt Time: ${"%.2f".format(tiltTime)} sec")
+                        Text("Yawns Detected: $yawns")
+                        Text("Drowsy Events: $drowsyEvents")
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // ── Event log card ─────────────────────────────────────────────
+                Card(
+                    shape    = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+
+                        Text(
+                            "Event Log",
+                            style = MaterialTheme.typography.titleLarge
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        LazyColumn(modifier = Modifier.height(200.dp)) {
+                            items(events.takeLast(10).reversed()) { event ->
+                                Text("• $event")
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        Button(
-            onClick = onBack,
-            modifier = Modifier.fillMaxWidth().systemBarsPadding(),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Text("Back to Camera")
+            // ── Buttons ────────────────────────────────────────────────────────
+            Column {
+                Button(
+                    onClick  = { SessionManager.resetSession() },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape    = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Reset Session")
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Button(
+                    onClick  = onBack,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape    = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Back to Camera")
+                }
+            }
         }
     }
 }

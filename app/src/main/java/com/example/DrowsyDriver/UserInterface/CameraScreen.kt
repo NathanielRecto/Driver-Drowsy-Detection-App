@@ -2,6 +2,9 @@ package com.example.DrowsyDriver.UserInterface
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -27,84 +30,158 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavController
-import java.util.concurrent.Executors
-
 import com.example.DrowsyDriver.extraction.FaceExtractionEngine
 import com.example.DrowsyDriver.extraction.FaceExtractionEngine.NormRect
+import com.example.DrowsyDriver.ml.EyeModel
+import com.example.DrowsyDriver.ml.MouthModel
+import com.example.DrowsyDriver.session.SessionManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import java.util.concurrent.Executors
+import kotlin.math.abs
 
-private const val EAR_CLOSED_TH = 0.10f
-private const val MAR_YAWN_TH = 0.50f
+// ── ML model thresholds ───────────────────────────────────────────────────────
+private const val EYE_CLOSED_THRESHOLD   = 0.85f   // model P(closed) per eye
+private const val YAWN_THRESHOLD         = 0.85f   // model P(yawn)
+private const val DROWSY_FRAMES_REQUIRED = 4        // consecutive frames before status flips
+
+// ── Feature-extraction thresholds (session tracking only, not for status) ────
+private const val EAR_CLOSED_TH        = 0.10f
+private const val EAR_OPEN_TH          = 0.23f
+private const val MAR_YAWN_TH          = 0.50f
+private const val HEAD_TILT_TH         = 30f
+private const val CLOSED_FRAME_TH      = 5         // frames before eyes count as closed
+private const val OPEN_FRAME_TH        = 3         // frames before eyes count as open again
+
+// ── Face-lost guard ───────────────────────────────────────────────────────────
+private const val FACE_EXPIRY_MS = 500L
 
 @Composable
 fun CameraScreen(navController: NavController) {
-    val context = LocalContext.current
+    val context        = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // ── Camera permission ──────────────────────────────────────────────────────
     var permissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
         )
     }
-
     val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
+        ActivityResultContracts.RequestPermission()
     ) { granted -> permissionGranted = granted }
 
     LaunchedEffect(Unit) {
         if (!permissionGranted) permissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    val uiState = remember {
-        mutableStateOf(
-            ExtractionUiState(
-                headTiltDeg = 0f,
-                yawnDeg = 0f,
-                eyesClosedSec = 0f,
-                mar = 0f,
-                ear = 0f,
-                status = "Normal"
-            )
-        )
-    }
+    // ── UI state ───────────────────────────────────────────────────────────────
+    val uiState = remember { mutableStateOf(ExtractionUiState()) }
 
-    // ✅ Toggle for debugging boxes
+    // ── Debug overlay toggle ───────────────────────────────────────────────────
     var showBoxes by remember { mutableStateOf(false) }
 
-    // For correct mapping
-    var imageW by remember { mutableStateOf(1) }
-    var imageH by remember { mutableStateOf(1) }
+    // ── Image dimensions for the canvas overlay ────────────────────────────────
+    var imageW by remember { mutableIntStateOf(1) }
+    var imageH by remember { mutableIntStateOf(1) }
 
-    // Boxes from extraction
-    var faceBox by remember { mutableStateOf<NormRect?>(null) }
-    var leftEyeBox by remember { mutableStateOf<NormRect?>(null) }
-    var rightEyeBox by remember { mutableStateOf<NormRect?>(null) }
-    var mouthBox by remember { mutableStateOf<NormRect?>(null) }
+    // ── Face boxes + tilt (updated by engine callback, read by ML loop) ────────
+    val previewViewRef    = remember { mutableStateOf<PreviewView?>(null) }
+    var faceBox           by remember { mutableStateOf<NormRect?>(null) }
+    var leftEyeBox        by remember { mutableStateOf<NormRect?>(null) }
+    var rightEyeBox       by remember { mutableStateOf<NormRect?>(null) }
+    var mouthBox          by remember { mutableStateOf<NormRect?>(null) }
+    var headTiltDeg       by remember { mutableFloatStateOf(0f) }
+    var lastFaceTimestamp by remember { mutableLongStateOf(0L) }
+
+    // ── Session tracking state (EAR-based, feeds SessionManager only) ──────────
+    var earSmoothed          by remember { mutableStateOf(0f) }
+    var closedFrameCount     by remember { mutableIntStateOf(0) }
+    var openFrameCount       by remember { mutableIntStateOf(0) }
+    var eyesAreClosed        by remember { mutableStateOf(false) }
+    var eyesClosedStartTime  by remember { mutableStateOf<Long?>(null) }
+    var headTiltStartTime    by remember { mutableStateOf<Long?>(null) }
+    var wasYawning           by remember { mutableStateOf(false) }
 
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
+    // ── FaceExtractionEngine ───────────────────────────────────────────────────
     val engine = remember(context) {
         FaceExtractionEngine(
-            context = context,
+            context        = context,
             modelAssetPath = "face_landmarker.task",
-            onResult = { res ->
-                imageW = res.imageWidth
-                imageH = res.imageHeight
+            onResult       = { res ->
 
-                faceBox = res.faceBox
-                leftEyeBox = res.leftEyeBox
-                rightEyeBox = res.rightEyeBox
-                mouthBox = res.mouthBox
+                // ── Image / box state for canvas + ML crop ─────────────────────
+                imageW            = res.imageWidth
+                imageH            = res.imageHeight
+                faceBox           = res.faceBox
+                leftEyeBox        = res.leftEyeBox
+                rightEyeBox       = res.rightEyeBox
+                mouthBox          = res.mouthBox
+                headTiltDeg       = res.headTiltDeg
+                lastFaceTimestamp = System.currentTimeMillis()
 
-                val statusNow =
-                    if (res.ear < EAR_CLOSED_TH || res.mar > MAR_YAWN_TH) "Drowsy" else "Normal"
-
+                // Feature-extraction values shown in the overlay (status is set
+                // by the ML inference loop below, not here).
                 uiState.value = uiState.value.copy(
-                    ear = res.ear,
-                    mar = res.mar,
                     headTiltDeg = res.headTiltDeg,
-                    status = statusNow
+                    ear         = res.ear,
+                    mar         = res.mar
                 )
+
+                // ── EAR smoothing (exponential moving average) ─────────────────
+                earSmoothed =
+                    if (earSmoothed == 0f) res.ear
+                    else 0.90f * earSmoothed + 0.10f * res.ear
+
+                val now = System.currentTimeMillis()
+
+                // ── Frame-based eye open/close confirmation ────────────────────
+                // Using hysteresis (two separate thresholds) avoids rapid toggling
+                // at the boundary.
+                if (earSmoothed < EAR_CLOSED_TH) {
+                    closedFrameCount++
+                    openFrameCount = 0
+                } else if (earSmoothed > EAR_OPEN_TH) {
+                    openFrameCount++
+                    closedFrameCount = 0
+                }
+                if (!eyesAreClosed && closedFrameCount >= CLOSED_FRAME_TH) eyesAreClosed = true
+                if ( eyesAreClosed && openFrameCount  >= OPEN_FRAME_TH)   eyesAreClosed = false
+
+                // ── Eye-closed duration → SessionManager ───────────────────────
+                if (eyesAreClosed) {
+                    if (eyesClosedStartTime == null) eyesClosedStartTime = now
+                } else {
+                    eyesClosedStartTime?.let { start ->
+                        SessionManager.totalEyeClosedTime += (now - start) / 1000f
+                    }
+                    eyesClosedStartTime = null
+                }
+
+                // ── Head-tilt duration → SessionManager ────────────────────────
+                if (abs(res.headTiltDeg) > HEAD_TILT_TH) {
+                    if (headTiltStartTime == null) headTiltStartTime = now
+                } else {
+                    headTiltStartTime?.let { start ->
+                        SessionManager.totalHeadTiltTime += (now - start) / 1000f
+                    }
+                    headTiltStartTime = null
+                }
+
+                // ── Frame counter ──────────────────────────────────────────────
+                SessionManager.incrementFrame()
+
+                // ── Yawn detection (rising edge) → SessionManager ──────────────
+                val isYawning = res.mar > MAR_YAWN_TH
+                if (isYawning && !wasYawning) {
+                    SessionManager.yawnCount++
+                    SessionManager.logEvent("Yawn Detected")
+                }
+                wasYawning = isYawning
             }
         )
     }
@@ -114,25 +191,151 @@ fun CameraScreen(navController: NavController) {
             try { engine.start() } catch (t: Throwable) { t.printStackTrace() }
         }
         onDispose {
-            engine.stop()
+            try { engine.stop() } catch (_: Throwable) {}
             analysisExecutor.shutdown()
         }
     }
 
+    // ── Load TFLite models ─────────────────────────────────────────────────────
+    val eyeModel = remember {
+        runCatching { EyeModel(context) }
+            .onFailure { Log.e("TFLITE", "Failed to load eye model", it) }
+            .getOrNull()
+    }
+    val mouthModel = remember {
+        runCatching { MouthModel(context) }
+            .onFailure { Log.e("TFLITE", "Failed to load mouth model", it) }
+            .getOrNull()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try { eyeModel?.close()   } catch (_: Throwable) {}
+            try { mouthModel?.close() } catch (_: Throwable) {}
+        }
+    }
+
+    // ── ML inference loop (~5 fps) ─────────────────────────────────────────────
+    var drowsyFrames by remember { mutableIntStateOf(0) }
+    // Tracks the previous model status so we only log drowsy events on the
+    // rising edge (Normal → Drowsy transition), not on every drowsy frame.
+    var wasDrowsy    by remember { mutableStateOf(false) }
+
+    LaunchedEffect(permissionGranted, previewViewRef.value) {
+        if (!permissionGranted) return@LaunchedEffect
+        val pv = previewViewRef.value ?: return@LaunchedEffect
+
+        while (true) {
+            val frameBmp = pv.bitmap          // must be called on the main thread
+            val now      = System.currentTimeMillis()
+
+            // If onResult hasn't fired recently the face has left the frame.
+            // Null the boxes so we don't crop stale regions of an empty background.
+            val facePresent = (now - lastFaceTimestamp) < FACE_EXPIRY_MS
+            val mb   = if (facePresent) mouthBox    else null
+            val leb  = if (facePresent) leftEyeBox  else null
+            val reb  = if (facePresent) rightEyeBox else null
+            val tilt = headTiltDeg
+
+            // Reset immediately when face disappears
+            if (!facePresent && drowsyFrames > 0) {
+                drowsyFrames  = 0
+                wasDrowsy     = false
+                uiState.value = uiState.value.copy(
+                    status   = "Normal",
+                    eyeProb  = 0f,
+                    yawnProb = 0f
+                )
+            }
+
+            withContext(Dispatchers.Default) {
+                if (frameBmp != null && facePresent) {
+
+                    // ── Eye model ──────────────────────────────────────────────
+                    var leftProb  = 0f
+                    var rightProb = 0f
+
+                    if (eyeModel != null) {
+                        leb?.let { box ->
+                            cropEye(frameBmp, box, tilt)?.also { crop ->
+                                leftProb = eyeModel.predictClosedProb(crop)
+                                crop.recycle()
+                            }
+                        }
+                        reb?.let { box ->
+                            cropEye(frameBmp, box, tilt)?.also { crop ->
+                                rightProb = eyeModel.predictClosedProb(crop)
+                                crop.recycle()
+                            }
+                        }
+                    }
+
+                    val eyeProb   = (leftProb + rightProb) / 2f
+                    val eyeClosed = leftProb  > EYE_CLOSED_THRESHOLD &&
+                            rightProb > EYE_CLOSED_THRESHOLD
+
+                    Log.d("ML_EYE", "L=$leftProb R=$rightProb avg=$eyeProb closed=$eyeClosed tilt=$tilt")
+
+                    // ── Mouth model ────────────────────────────────────────────
+                    var yawnProb  = 0f
+                    var mouthYawn = false
+
+                    if (mouthModel != null) {
+                        mb?.let { box ->
+                            cropNormRect(frameBmp, box)?.also { crop ->
+                                yawnProb  = mouthModel.predictYawnProb(crop)
+                                mouthYawn = yawnProb > YAWN_THRESHOLD
+                                crop.recycle()
+                            }
+                        }
+                    }
+
+                    // ── Drowsy decision ────────────────────────────────────────
+                    drowsyFrames = if (eyeClosed || mouthYawn) drowsyFrames + 1 else 0
+                    val isDrowsy = drowsyFrames >= DROWSY_FRAMES_REQUIRED
+                    val label    = if (isDrowsy) "Drowsy" else "Normal"
+
+                    // Log a drowsy event to SessionManager on the rising edge only
+                    if (isDrowsy && !wasDrowsy) {
+                        SessionManager.drowsyEvents++
+                        SessionManager.logEvent("Drowsiness Detected")
+                    }
+                    wasDrowsy = isDrowsy
+
+                    uiState.value = uiState.value.copy(
+                        status   = label,
+                        eyeProb  = eyeProb,
+                        yawnProb = yawnProb
+                    )
+
+                    Log.d("ML", "eye=$eyeProb closed=$eyeClosed yawn=$yawnProb mouth=$mouthYawn frames=$drowsyFrames → $label")
+                }
+            }
+
+            delay(200)
+        }
+    }
+
+    // ── UI ─────────────────────────────────────────────────────────────────────
     Box(modifier = Modifier.fillMaxSize()) {
 
         if (permissionGranted) {
+
+            // Camera preview
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
                     .systemBarsPadding(),
                 factory = { ctx ->
                     PreviewView(ctx).apply {
-                        scaleType = PreviewView.ScaleType.FILL_CENTER
+                        scaleType          = PreviewView.ScaleType.FILL_CENTER
                         implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        previewViewRef.value = this
                     }
                 },
                 update = { previewView ->
+                    previewViewRef.value = previewView
+
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
                     cameraProviderFuture.addListener({
                         val cameraProvider = cameraProviderFuture.get()
@@ -140,12 +343,11 @@ fun CameraScreen(navController: NavController) {
                         val preview = Preview.Builder().build().also {
                             it.setSurfaceProvider(previewView.surfaceProvider)
                         }
-
                         val analysis = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .build()
-                            .also { imageAnalysis ->
-                                imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                            .also { ia ->
+                                ia.setAnalyzer(analysisExecutor) { imageProxy ->
                                     engine.analyze(imageProxy, isFrontCamera = true)
                                 }
                             }
@@ -159,72 +361,56 @@ fun CameraScreen(navController: NavController) {
                                 analysis
                             )
                         } catch (e: Exception) {
-                            e.printStackTrace()
+                            Log.e("CAMERA", "bindToLifecycle failed", e)
                         }
                     }, ContextCompat.getMainExecutor(context))
                 }
             )
 
-            // ✅ Draw boxes ONLY when showBoxes is true
+            // Debug box overlay — drawn on top of the preview
             if (showBoxes) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     if (imageW <= 1 || imageH <= 1) return@Canvas
 
-                    val imgWf = imageW.toFloat()
-                    val imgHf = imageH.toFloat()
-
-                    // Center-crop mapping to match PreviewView.FILL_CENTER
-                    val scale = maxOf(size.width / imgWf, size.height / imgHf)
-                    val offsetX = (size.width - imgWf * scale) / 2f
+                    val imgWf   = imageW.toFloat()
+                    val imgHf   = imageH.toFloat()
+                    val scale   = maxOf(size.width / imgWf, size.height / imgHf)
+                    val offsetX = (size.width  - imgWf * scale) / 2f
                     val offsetY = (size.height - imgHf * scale) / 2f
 
-                    // If your extraction already mirrors the bitmap for front camera,
-                    // keep this false. If preview behaves like a selfie mirror, set true.
-                    val mirrorOverlay = false
-
-                    fun drawNormRect(r: NormRect?, stroke: Float) {
+                    fun drawNormRect(r: NormRect?, strokePx: Float) {
                         if (r == null) return
-
-                        // ✅ Use lN/rN (your previous code calculated but didn't use)
-                        val lN = if (mirrorOverlay) (1f - r.right) else r.left
-                        val rN = if (mirrorOverlay) (1f - r.left) else r.right
-                        val tN = r.top
-                        val bN = r.bottom
-
-                        val left = lN * imgWf * scale + offsetX
-                        val top = tN * imgHf * scale + offsetY
-                        val right = rN * imgWf * scale + offsetX
-                        val bottom = bN * imgHf * scale + offsetY
-
+                        val l  = r.left   * imgWf * scale + offsetX
+                        val t  = r.top    * imgHf * scale + offsetY
+                        val rr = r.right  * imgWf * scale + offsetX
+                        val b  = r.bottom * imgHf * scale + offsetY
                         drawRect(
-                            color = Color(0xFF00FF00),
-                            topLeft = Offset(left, top),
-                            size = Size(right - left, bottom - top),
-                            style = Stroke(width = stroke)
+                            color    = Color(0xFF00FF00),
+                            topLeft  = Offset(l, t),
+                            size     = Size(rr - l, b - t),
+                            style    = Stroke(width = strokePx)
                         )
                     }
 
-                    drawNormRect(faceBox, stroke = 4f)
-                    drawNormRect(leftEyeBox, stroke = 3f)
-                    drawNormRect(rightEyeBox, stroke = 3f)
-                    drawNormRect(mouthBox, stroke = 3f)
+                    drawNormRect(faceBox,     strokePx = 4f)
+                    drawNormRect(leftEyeBox,  strokePx = 3f)
+                    drawNormRect(rightEyeBox, strokePx = 3f)
+                    drawNormRect(mouthBox,    strokePx = 3f)
                 }
             }
 
         } else {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .systemBarsPadding(),
+                modifier         = Modifier.fillMaxSize().systemBarsPadding(),
                 contentAlignment = Alignment.Center
             ) {
                 Text("Camera permission is needed to show preview.")
             }
         }
 
-        // ✅ Top-left toggle button
+        // Show / Hide Boxes — top-left
         Button(
-            onClick = { showBoxes = !showBoxes },
+            onClick  = { showBoxes = !showBoxes },
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(16.dp)
@@ -234,9 +420,9 @@ fun CameraScreen(navController: NavController) {
             Text(if (showBoxes) "Hide Boxes" else "Show Boxes")
         }
 
-        // Top-right button
+        // Session Data — top-right
         Button(
-            onClick = { navController.navigate("data_collection") },
+            onClick  = { navController.navigate("data_collection") },
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(16.dp)
@@ -247,11 +433,66 @@ fun CameraScreen(navController: NavController) {
         }
 
         StatusPanel(
-            state = uiState.value,
+            state    = uiState.value,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(16.dp)
                 .systemBarsPadding()
         )
     }
+}
+
+// ── Crop helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Square, deskewed 224×224 crop for a single eye.
+ *
+ * 1. Expands the landmark box to a square (eye boxes are ~2.5:1 landscape;
+ *    squishing directly to 224×224 compresses open eyes until they look closed).
+ * 2. Rotates by −headTiltDeg so the eye is always horizontal, matching training data.
+ */
+private fun cropEye(src: Bitmap, r: NormRect, headTiltDeg: Float): Bitmap? {
+    val cx       = (r.left + r.right)  / 2f
+    val cy       = (r.top  + r.bottom) / 2f
+    val halfSide = maxOf(r.right - r.left, r.bottom - r.top) / 2f
+
+    val left   = ((cx - halfSide) * src.width ).toInt().coerceIn(0, src.width  - 1)
+    val top    = ((cy - halfSide) * src.height).toInt().coerceIn(0, src.height - 1)
+    val right  = ((cx + halfSide) * src.width ).toInt().coerceIn(left + 1, src.width)
+    val bottom = ((cy + halfSide) * src.height).toInt().coerceIn(top  + 1, src.height)
+    val w = right - left
+    val h = bottom - top
+    if (w <= 2 || h <= 2) return null
+
+    val cropped  = Bitmap.createBitmap(src, left, top, w, h)
+    val deskewed = if (kotlin.math.abs(headTiltDeg) > 5f) {
+        val m = Matrix().apply {
+            postRotate(-headTiltDeg, cropped.width / 2f, cropped.height / 2f)
+        }
+        Bitmap.createBitmap(cropped, 0, 0, cropped.width, cropped.height, m, true)
+            .also { cropped.recycle() }
+    } else cropped
+
+    val scaled = Bitmap.createScaledBitmap(deskewed, 224, 224, true)
+    if (scaled !== deskewed) deskewed.recycle()
+    return scaled
+}
+
+/**
+ * Plain axis-aligned 224×224 crop — used for the mouth box, which is already
+ * approximately square and does not need deskewing.
+ */
+private fun cropNormRect(src: Bitmap, r: NormRect): Bitmap? {
+    val left   = (r.left   * src.width ).toInt().coerceIn(0, src.width  - 1)
+    val top    = (r.top    * src.height).toInt().coerceIn(0, src.height - 1)
+    val right  = (r.right  * src.width ).toInt().coerceIn(left + 1, src.width)
+    val bottom = (r.bottom * src.height).toInt().coerceIn(top  + 1, src.height)
+    val w = right - left
+    val h = bottom - top
+    if (w <= 2 || h <= 2) return null
+
+    val cropped = Bitmap.createBitmap(src, left, top, w, h)
+    val scaled  = Bitmap.createScaledBitmap(cropped, 224, 224, true)
+    if (scaled !== cropped) cropped.recycle()
+    return scaled
 }
