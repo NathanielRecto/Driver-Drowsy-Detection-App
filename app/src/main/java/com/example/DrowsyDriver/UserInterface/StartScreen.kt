@@ -1,7 +1,9 @@
 package com.example.DrowsyDriver.UserInterface
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -11,29 +13,32 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun StartScreen(onStartClicked: () -> Unit)
-{
+fun StartScreen(onStartClicked: () -> Unit) {
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Drowsy Driver Detector",
-                fontSize = 30.sp,
-                fontWeight = FontWeight.Bold
+                text       = "Drowsy Driver Detector",
+                fontSize   = 30.sp,
+                fontWeight = FontWeight.Bold,
+                color      = MaterialTheme.colorScheme.onBackground
             )
 
             Spacer(modifier = Modifier.height(25.dp))
+
             Button(onClick = onStartClicked) {
                 Text(
-                    text = "Start Monitoring",
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.Bold)
+                    text       = "Start Monitoring",
+                    fontSize   = 30.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
-
     }
 }

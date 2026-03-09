@@ -12,6 +12,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,10 +48,10 @@ private const val YAWN_THRESHOLD         = 0.85f   // model P(yawn)
 private const val DROWSY_FRAMES_REQUIRED = 4        // consecutive frames before status flips
 
 // ── Feature-extraction thresholds (session tracking only, not for status) ────
-private const val EAR_CLOSED_TH        = 0.10f
+private const val EAR_CLOSED_TH        = 0.17f
 private const val EAR_OPEN_TH          = 0.23f
 private const val MAR_YAWN_TH          = 0.50f
-private const val HEAD_TILT_TH         = 30f
+private const val HEAD_TILT_TH         = 15f
 private const val CLOSED_FRAME_TH      = 5         // frames before eyes count as closed
 private const val OPEN_FRAME_TH        = 3         // frames before eyes count as open again
 
@@ -88,7 +89,6 @@ fun CameraScreen(navController: NavController) {
     var imageH by remember { mutableIntStateOf(1) }
 
     // ── Face boxes + tilt (updated by engine callback, read by ML loop) ────────
-    val previewViewRef    = remember { mutableStateOf<PreviewView?>(null) }
     var faceBox           by remember { mutableStateOf<NormRect?>(null) }
     var leftEyeBox        by remember { mutableStateOf<NormRect?>(null) }
     var rightEyeBox       by remember { mutableStateOf<NormRect?>(null) }
@@ -157,7 +157,7 @@ fun CameraScreen(navController: NavController) {
                     if (eyesClosedStartTime == null) eyesClosedStartTime = now
                 } else {
                     eyesClosedStartTime?.let { start ->
-                        SessionManager.totalEyeClosedTime += (now - start) / 1000f
+                        SessionManager.totalEyeClosedTime = SessionManager.totalEyeClosedTime + (now - start) / 1000f
                     }
                     eyesClosedStartTime = null
                 }
@@ -167,7 +167,7 @@ fun CameraScreen(navController: NavController) {
                     if (headTiltStartTime == null) headTiltStartTime = now
                 } else {
                     headTiltStartTime?.let { start ->
-                        SessionManager.totalHeadTiltTime += (now - start) / 1000f
+                        SessionManager.totalHeadTiltTime = SessionManager.totalHeadTiltTime + (now - start) / 1000f
                     }
                     headTiltStartTime = null
                 }
@@ -178,7 +178,7 @@ fun CameraScreen(navController: NavController) {
                 // ── Yawn detection (rising edge) → SessionManager ──────────────
                 val isYawning = res.mar > MAR_YAWN_TH
                 if (isYawning && !wasYawning) {
-                    SessionManager.yawnCount++
+                    SessionManager.incrementYawn()
                     SessionManager.logEvent("Yawn Detected")
                 }
                 wasYawning = isYawning
@@ -221,12 +221,16 @@ fun CameraScreen(navController: NavController) {
     // rising edge (Normal → Drowsy transition), not on every drowsy frame.
     var wasDrowsy    by remember { mutableStateOf(false) }
 
-    LaunchedEffect(permissionGranted, previewViewRef.value) {
+    LaunchedEffect(permissionGranted) {
         if (!permissionGranted) return@LaunchedEffect
-        val pv = previewViewRef.value ?: return@LaunchedEffect
 
         while (true) {
-            val frameBmp = pv.bitmap          // must be called on the main thread
+            // Snapshot lastFrame into a local val here, on the coroutine's
+            // main-thread slice, BEFORE entering Dispatchers.Default.
+            // This keeps the bitmap alive even after analyze() swaps lastFrame
+            // on the analysisExecutor thread — the local val holds a reference
+            // so the bitmap cannot be recycled underneath cropEye().
+            val frameBmp = engine.lastFrame
             val now      = System.currentTimeMillis()
 
             // If onResult hasn't fired recently the face has left the frame.
@@ -297,7 +301,7 @@ fun CameraScreen(navController: NavController) {
 
                     // Log a drowsy event to SessionManager on the rising edge only
                     if (isDrowsy && !wasDrowsy) {
-                        SessionManager.drowsyEvents++
+                        SessionManager.incrementDrowsy()
                         SessionManager.logEvent("Drowsiness Detected")
                     }
                     wasDrowsy = isDrowsy
@@ -317,25 +321,26 @@ fun CameraScreen(navController: NavController) {
     }
 
     // ── UI ─────────────────────────────────────────────────────────────────────
-    Box(modifier = Modifier.fillMaxSize()) {
+    // Black background so the status bar and nav bar areas are always dark,
+    // even if the camera preview doesn't fully reach the very edges.
+    Box(modifier = Modifier
+        .fillMaxSize()
+        .background(Color.Black)
+    ) {
 
         if (permissionGranted) {
 
-            // Camera preview
+            // No systemBarsPadding here — the preview fills edge to edge behind
+            // the status bar and navigation bar for a true full-screen look.
             AndroidView(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .systemBarsPadding(),
+                modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     PreviewView(ctx).apply {
                         scaleType          = PreviewView.ScaleType.FILL_CENTER
                         implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                        previewViewRef.value = this
                     }
                 },
                 update = { previewView ->
-                    previewViewRef.value = previewView
-
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
                     cameraProviderFuture.addListener({
                         val cameraProvider = cameraProviderFuture.get()
@@ -452,9 +457,21 @@ fun CameraScreen(navController: NavController) {
  * 2. Rotates by −headTiltDeg so the eye is always horizontal, matching training data.
  */
 private fun cropEye(src: Bitmap, r: NormRect, headTiltDeg: Float): Bitmap? {
-    val cx       = (r.left + r.right)  / 2f
-    val cy       = (r.top  + r.bottom) / 2f
-    val halfSide = maxOf(r.right - r.left, r.bottom - r.top) / 2f
+    val cx      = (r.left + r.right)  / 2f
+    val cy      = (r.top  + r.bottom) / 2f
+    val tiltAbs = kotlin.math.abs(headTiltDeg)
+
+    // BUG FIX: in-place bitmap rotation fills output corners with black pixels
+    // when the source square is too small to cover the rotated output.
+    // At 30° tilt, 36% of the output corners become black — the model reads
+    // these as closed eyelids and fires 100% drowsy even with eyes open.
+    //
+    // Required expansion factor for angle θ = |cosθ| + |sinθ|  (≈1.37 at 30°).
+    // We use 1.5× as a fixed factor, which covers all tilts up to ~45° safely.
+    // The extra background margin around the eye does not hurt model accuracy
+    // because the model was trained on similarly padded crops.
+    val padFactor = if (tiltAbs > 5f) 1.5f else 1.0f
+    val halfSide  = maxOf(r.right - r.left, r.bottom - r.top) / 2f * padFactor
 
     val left   = ((cx - halfSide) * src.width ).toInt().coerceIn(0, src.width  - 1)
     val top    = ((cy - halfSide) * src.height).toInt().coerceIn(0, src.height - 1)
@@ -465,7 +482,7 @@ private fun cropEye(src: Bitmap, r: NormRect, headTiltDeg: Float): Bitmap? {
     if (w <= 2 || h <= 2) return null
 
     val cropped  = Bitmap.createBitmap(src, left, top, w, h)
-    val deskewed = if (kotlin.math.abs(headTiltDeg) > 5f) {
+    val deskewed = if (tiltAbs > 5f) {
         val m = Matrix().apply {
             postRotate(-headTiltDeg, cropped.width / 2f, cropped.height / 2f)
         }

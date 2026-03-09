@@ -20,6 +20,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Make the navigation bar fully transparent so the camera preview
+        // shows through it. Works on Android 10+ (API 29+).
+        // On older devices the system enforces a semi-transparent scrim
+        // and this line will have no visible effect.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        }
         setContent {
             FirstAppTheme {
                 val navController = rememberNavController()
