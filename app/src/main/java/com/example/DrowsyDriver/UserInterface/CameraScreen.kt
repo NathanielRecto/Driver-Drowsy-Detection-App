@@ -341,7 +341,7 @@ fun CameraScreen(navController: NavController) {
 
         val shouldAlert = Alert.checkAlert(
             eyeClosedDuration = eyeClosedDuration,
-            isDrowsy          = (uiState.value.status == "Drowsy"), // ML trigger
+            isDrowsy          = (isDrowsy), // ML trigger
             yawnDuration      = yawnDuration,                       // Feature extraction trigger
             headTiltDuration  = headTiltDuration                    // Feature extraction trigger
         )
