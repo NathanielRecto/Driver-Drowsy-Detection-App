@@ -41,7 +41,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import kotlin.math.abs
-
+import com.example.DrowsyDriver.alert.Alert
 // ── ML model thresholds ───────────────────────────────────────────────────────
 private const val EYE_CLOSED_THRESHOLD   = 0.85f   // model P(closed) per eye
 private const val YAWN_THRESHOLD         = 0.85f   // model P(yawn)
@@ -104,9 +104,10 @@ fun CameraScreen(navController: NavController) {
     var eyesClosedStartTime  by remember { mutableStateOf<Long?>(null) }
     var headTiltStartTime    by remember { mutableStateOf<Long?>(null) }
     var wasYawning           by remember { mutableStateOf(false) }
-
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
+    var isDrowsy by remember { mutableStateOf(false) } // used for alert
+    var yawnStartTime by remember { mutableStateOf<Long?>(null) } // not being logged
     // ── FaceExtractionEngine ───────────────────────────────────────────────────
     val engine = remember(context) {
         FaceExtractionEngine(
@@ -182,6 +183,15 @@ fun CameraScreen(navController: NavController) {
                     SessionManager.logEvent("Yawn Detected")
                 }
                 wasYawning = isYawning
+
+                // Duration based yawn detection, instead of a single frame
+                // we track the start time so the alert system only triggers on a real yawn not just if mouth is open for a frame.
+                val isCurrentlyYawning = res.mar > MAR_YAWN_TH
+                if (isCurrentlyYawning) {
+                    if (yawnStartTime == null) yawnStartTime = now
+                } else {
+                    yawnStartTime = null
+                }
             }
         )
     }
@@ -317,6 +327,26 @@ fun CameraScreen(navController: NavController) {
             }
 
             delay(200)
+        }
+    }
+
+    //--- Alert section
+    LaunchedEffect(uiState.value, isDrowsy, headTiltStartTime, yawnStartTime, eyesClosedStartTime) {
+        val now = System.currentTimeMillis()
+
+        // Calculate how long these states have been active
+        val eyeClosedDuration = eyesClosedStartTime?.let { now - it } ?: 0L
+        val headTiltDuration  = headTiltStartTime?.let { now - it } ?: 0L
+        val yawnDuration      = yawnStartTime?.let { now - it } ?: 0L
+
+        val shouldAlert = Alert.checkAlert(
+            eyeClosedDuration = eyeClosedDuration,
+            isDrowsy          = (uiState.value.status == "Drowsy"), // ML trigger
+            yawnDuration      = yawnDuration,                       // Feature extraction trigger
+            headTiltDuration  = headTiltDuration                    // Feature extraction trigger
+        )
+        if (shouldAlert) {
+            Alert.triggerAlert(context)
         }
     }
 
