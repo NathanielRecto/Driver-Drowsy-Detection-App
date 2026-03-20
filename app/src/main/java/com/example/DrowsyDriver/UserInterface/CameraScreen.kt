@@ -306,7 +306,7 @@ fun CameraScreen(navController: NavController) {
 
                     // ── Drowsy decision ────────────────────────────────────────
                     drowsyFrames = if (eyeClosed || mouthYawn) drowsyFrames + 1 else 0
-                    val isDrowsy = drowsyFrames >= DROWSY_FRAMES_REQUIRED
+                    isDrowsy = drowsyFrames >= DROWSY_FRAMES_REQUIRED
                     val label    = if (isDrowsy) "Drowsy" else "Normal"
 
                     // Log a drowsy event to SessionManager on the rising edge only
