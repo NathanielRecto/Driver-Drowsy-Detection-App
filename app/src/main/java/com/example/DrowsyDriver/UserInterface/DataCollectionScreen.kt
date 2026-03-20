@@ -26,6 +26,7 @@ fun DataCollectionScreen(
     var yawns           by remember { mutableIntStateOf(SessionManager.yawnCount) }
     var drowsyEvents    by remember { mutableIntStateOf(SessionManager.drowsyEvents) }
     var frames          by remember { mutableIntStateOf(SessionManager.framesProcessed) }
+    var blinks          by remember { mutableIntStateOf(SessionManager.blinkCount) }
     var events          by remember { mutableStateOf(SessionManager.events.toList()) }
 
     // Poll SessionManager every second so values stay current without
@@ -38,6 +39,7 @@ fun DataCollectionScreen(
             yawns           = SessionManager.yawnCount
             drowsyEvents    = SessionManager.drowsyEvents
             frames          = SessionManager.framesProcessed
+            blinks          = SessionManager.blinkCount
             events          = SessionManager.events.toList()
             delay(1_000)
         }
@@ -73,6 +75,7 @@ fun DataCollectionScreen(
                         Text("Frames Processed: $frames")
                         Text("Total Eye Closed Time: ${"%.2f".format(eyeTime)} sec")
                         Text("Total Head Tilt Time: ${"%.2f".format(tiltTime)} sec")
+                        Text("Blinks Detected: $blinks")
                         Text("Yawns Detected: $yawns")
                         Text("Drowsy Events: $drowsyEvents")
                     }
@@ -114,6 +117,7 @@ fun DataCollectionScreen(
                         yawns           = 0
                         drowsyEvents    = 0
                         frames          = 0
+                        blinks          = 0
                         events          = emptyList()
                     },
                     modifier = Modifier.fillMaxWidth(),

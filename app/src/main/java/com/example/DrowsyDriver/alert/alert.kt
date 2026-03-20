@@ -2,6 +2,10 @@ package com.example.DrowsyDriver.alert
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import com.example.DrowsyDriver.R
 
@@ -13,6 +17,7 @@ object Alert {
     private const val YAWN_MS = 2000L
     private const val TILT_MS = 5000L
     private var mediaPlayer: MediaPlayer? = null
+    private var vibrator: Vibrator? = null
     fun checkAlert(eyeClosedDuration: Long, isDrowsy: Boolean, yawnDuration: Long,headTiltDuration: Long): Boolean {
         var currentScore = 0
         // 1. Eyes Closed
@@ -59,6 +64,21 @@ object Alert {
                 it.start()
                 Log.d("ALERT", "[ALERT TRIGGERED] - Drowsiness Detected")
             }
+        }
+
+        // Vibration — fires once per alert (same cooldown)
+        try {
+            val v = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vm.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 400, 200, 400), -1))
+            vibrator = v
+        } catch (e: Exception) {
+            Log.e("ALERT", "Error starting vibration", e)
         }
     }
 }

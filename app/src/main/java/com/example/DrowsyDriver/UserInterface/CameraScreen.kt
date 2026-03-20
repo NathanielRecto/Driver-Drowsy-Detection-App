@@ -103,7 +103,7 @@ fun CameraScreen(navController: NavController) {
     var eyesAreClosed        by remember { mutableStateOf(false) }
     var eyesClosedStartTime  by remember { mutableStateOf<Long?>(null) }
     var headTiltStartTime    by remember { mutableStateOf<Long?>(null) }
-    var wasYawning           by remember { mutableStateOf(false) }
+    var blinkEarDown         by remember { mutableStateOf(false) }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
     var isDrowsy by remember { mutableStateOf(false) } // used for alert
@@ -176,21 +176,32 @@ fun CameraScreen(navController: NavController) {
                 // ── Frame counter ──────────────────────────────────────────────
                 SessionManager.incrementFrame()
 
-                // ── Yawn detection (rising edge) → SessionManager ──────────────
+                // ── Yawn detection (duration-based) ───────────────────────
+                // Only counts after MAR stays above threshold for 1500ms.
+                // Rising-edge counting fired on any brief mouth open (talking,
+                // coughing). Now the mouth must stay open for a full yawn duration.
                 val isYawning = res.mar > MAR_YAWN_TH
-                if (isYawning && !wasYawning) {
-                    SessionManager.incrementYawn()
-                    SessionManager.logEvent("Yawn Detected")
-                }
-                wasYawning = isYawning
-
-                // Duration based yawn detection, instead of a single frame
-                // we track the start time so the alert system only triggers on a real yawn not just if mouth is open for a frame.
-                val isCurrentlyYawning = res.mar > MAR_YAWN_TH
-                if (isCurrentlyYawning) {
+                if (isYawning) {
                     if (yawnStartTime == null) yawnStartTime = now
                 } else {
+                    yawnStartTime?.let { start ->
+                        if (now - start >= 1500L) {
+                            SessionManager.incrementYawn()
+                            SessionManager.logEvent("Yawn Detected")
+                        }
+                    }
                     yawnStartTime = null
+                }
+
+                // ── Blink detection ────────────────────────────────────────────
+                // Uses raw EAR threshold crossings directly — faster than
+                // eyesAreClosed which needs 5+3 confirmation frames and misses
+                // most blinks before they complete.
+                if (res.ear < EAR_CLOSED_TH) {
+                    blinkEarDown = true
+                } else if (blinkEarDown) {
+                    blinkEarDown = false
+                    SessionManager.incrementBlink()
                 }
             }
         )
@@ -235,11 +246,8 @@ fun CameraScreen(navController: NavController) {
         if (!permissionGranted) return@LaunchedEffect
 
         while (true) {
-            // Snapshot lastFrame into a local val here, on the coroutine's
-            // main-thread slice, BEFORE entering Dispatchers.Default.
-            // This keeps the bitmap alive even after analyze() swaps lastFrame
-            // on the analysisExecutor thread — the local val holds a reference
-            // so the bitmap cannot be recycled underneath cropEye().
+            // Snapshot lastFrame before entering Dispatchers.Default — the local
+            // val keeps the bitmap alive through the withContext suspend point.
             val frameBmp = engine.lastFrame
             val now      = System.currentTimeMillis()
 
@@ -309,7 +317,6 @@ fun CameraScreen(navController: NavController) {
                     isDrowsy = drowsyFrames >= DROWSY_FRAMES_REQUIRED
                     val label    = if (isDrowsy) "Drowsy" else "Normal"
 
-                    // Log a drowsy event to SessionManager on the rising edge only
                     if (isDrowsy && !wasDrowsy) {
                         SessionManager.incrementDrowsy()
                         SessionManager.logEvent("Drowsiness Detected")
@@ -362,6 +369,19 @@ fun CameraScreen(navController: NavController) {
 
             // No systemBarsPadding here — the preview fills edge to edge behind
             // the status bar and navigation bar for a true full-screen look.
+            //
+            // isCameraBound prevents the update block from calling unbindAll()
+            // on every recomposition. Without this flag, every navigation back
+            // to CameraScreen triggers unbindAll() which can free the camera
+            // HAL's native image buffers while engine.analyze() is mid-read on
+            // imageProxy.planes[0].buffer → SIGSEGV at 0x140.
+            //
+            // The update block still runs here (not DisposableEffect) because
+            // the PreviewView must be attached to the window before
+            // setSurfaceProvider() has a valid surface — DisposableEffect runs
+            // too early and causes a black screen on first launch.
+            var isCameraBound by remember { mutableStateOf(false) }
+
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
@@ -371,6 +391,8 @@ fun CameraScreen(navController: NavController) {
                     }
                 },
                 update = { previewView ->
+                    if (isCameraBound) return@AndroidView   // already bound — skip
+
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
                     cameraProviderFuture.addListener({
                         val cameraProvider = cameraProviderFuture.get()
@@ -395,6 +417,7 @@ fun CameraScreen(navController: NavController) {
                                 preview,
                                 analysis
                             )
+                            isCameraBound = true
                         } catch (e: Exception) {
                             Log.e("CAMERA", "bindToLifecycle failed", e)
                         }
@@ -501,12 +524,23 @@ private fun cropEye(src: Bitmap, r: NormRect, headTiltDeg: Float): Bitmap? {
     // The extra background margin around the eye does not hurt model accuracy
     // because the model was trained on similarly padded crops.
     val padFactor = if (tiltAbs > 5f) 1.5f else 1.0f
-    val halfSide  = maxOf(r.right - r.left, r.bottom - r.top) / 2f * padFactor
 
-    val left   = ((cx - halfSide) * src.width ).toInt().coerceIn(0, src.width  - 1)
-    val top    = ((cy - halfSide) * src.height).toInt().coerceIn(0, src.height - 1)
-    val right  = ((cx + halfSide) * src.width ).toInt().coerceIn(left + 1, src.width)
-    val bottom = ((cy + halfSide) * src.height).toInt().coerceIn(top  + 1, src.height)
+    // FIX: halfSide must be computed in pixel space, not normalized space.
+    // The old code did maxOf(norm_w, norm_h) then multiplied by src.width and
+    // src.height separately — on a portrait 1080×1920 frame this made the crop
+    // 1.78× taller than wide. Scaled to 224×224, open eyes looked closed to the
+    // model → 100% drowsy at all tilt angles, worst at 30° with padFactor=1.5.
+    val halfW_px = (r.right - r.left) * src.width  / 2f
+    val halfH_px = (r.bottom - r.top) * src.height / 2f
+    val halfSide = maxOf(halfW_px, halfH_px) * padFactor
+
+    val cx_px = cx * src.width
+    val cy_px = cy * src.height
+
+    val left   = (cx_px - halfSide).toInt().coerceIn(0, src.width  - 1)
+    val top    = (cy_px - halfSide).toInt().coerceIn(0, src.height - 1)
+    val right  = (cx_px + halfSide).toInt().coerceIn(left + 1, src.width)
+    val bottom = (cy_px + halfSide).toInt().coerceIn(top  + 1, src.height)
     val w = right - left
     val h = bottom - top
     if (w <= 2 || h <= 2) return null
