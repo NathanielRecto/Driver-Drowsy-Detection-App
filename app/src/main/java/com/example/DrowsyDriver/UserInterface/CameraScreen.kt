@@ -93,7 +93,11 @@ fun CameraScreen(navController: NavController) {
     var leftEyeBox        by remember { mutableStateOf<NormRect?>(null) }
     var rightEyeBox       by remember { mutableStateOf<NormRect?>(null) }
     var mouthBox          by remember { mutableStateOf<NormRect?>(null) }
-    var headTiltDeg       by remember { mutableFloatStateOf(0f) }
+    var headTiltDeg by remember { mutableFloatStateOf(0f) }
+    var tiltSmoothed by remember { mutableFloatStateOf(0f) }
+    var isCalibrated by remember { mutableStateOf(false) }
+    var tiltBaseline by remember { mutableFloatStateOf(0f) }
+    var baselineSet by remember { mutableStateOf(false) }
     var lastFaceTimestamp by remember { mutableLongStateOf(0L) }
 
     // ── Session tracking state (EAR-based, feeds SessionManager only) ──────────
@@ -122,13 +126,23 @@ fun CameraScreen(navController: NavController) {
                 leftEyeBox        = res.leftEyeBox
                 rightEyeBox       = res.rightEyeBox
                 mouthBox          = res.mouthBox
-                headTiltDeg       = res.headTiltDeg
+                // Smooth
+                tiltSmoothed =
+                    if (tiltSmoothed == 0f) res.headTiltDeg
+                    else 0.9f * tiltSmoothed + 0.1f * res.headTiltDeg
+
+                // Only calculate tilt AFTER calibration
+                if (isCalibrated) {
+                    headTiltDeg = tiltSmoothed - tiltBaseline
+                } else {
+                    headTiltDeg = 0f
+                }
                 lastFaceTimestamp = System.currentTimeMillis()
 
                 // Feature-extraction values shown in the overlay (status is set
                 // by the ML inference loop below, not here).
                 uiState.value = uiState.value.copy(
-                    headTiltDeg = res.headTiltDeg,
+                    headTiltDeg = headTiltDeg,
                     ear         = res.ear,
                     mar         = res.mar
                 )
@@ -155,20 +169,28 @@ fun CameraScreen(navController: NavController) {
 
                 // ── Eye-closed duration → SessionManager ───────────────────────
                 if (eyesAreClosed) {
-                    if (eyesClosedStartTime == null) eyesClosedStartTime = now
+                    if (eyesClosedStartTime == null) {
+                        eyesClosedStartTime = now
+                        SessionManager.logEvent("Eyes Closed Started")
+                    }
                 } else {
                     eyesClosedStartTime?.let { start ->
-                        SessionManager.totalEyeClosedTime = SessionManager.totalEyeClosedTime + (now - start) / 1000f
+                        val duration = (now - start) / 1000f
+                        SessionManager.logEvent("Eyes Opened (${String.format("%.2f", duration)}s closed)")
                     }
                     eyesClosedStartTime = null
                 }
 
                 // ── Head-tilt duration → SessionManager ────────────────────────
                 if (abs(res.headTiltDeg) > HEAD_TILT_TH) {
-                    if (headTiltStartTime == null) headTiltStartTime = now
+                    if (headTiltStartTime == null) {
+                        headTiltStartTime = now
+                        SessionManager.logEvent("Head Tilt Started")
+                    }
                 } else {
                     headTiltStartTime?.let { start ->
-                        SessionManager.totalHeadTiltTime = SessionManager.totalHeadTiltTime + (now - start) / 1000f
+                        val duration = (now - start) / 1000f
+                        SessionManager.logEvent("Head Tilt Ended (${String.format("%.2f", duration)}s)")
                     }
                     headTiltStartTime = null
                 }
@@ -176,22 +198,26 @@ fun CameraScreen(navController: NavController) {
                 // ── Frame counter ──────────────────────────────────────────────
                 SessionManager.incrementFrame()
 
-                // ── Yawn detection (rising edge) → SessionManager ──────────────
-                val isYawning = res.mar > MAR_YAWN_TH
-                if (isYawning && !wasYawning) {
-                    SessionManager.incrementYawn()
-                    SessionManager.logEvent("Yawn Detected")
-                }
-                wasYawning = isYawning
 
-                // Duration based yawn detection, instead of a single frame
-                // we track the start time so the alert system only triggers on a real yawn not just if mouth is open for a frame.
                 val isCurrentlyYawning = res.mar > MAR_YAWN_TH
+
                 if (isCurrentlyYawning) {
-                    if (yawnStartTime == null) yawnStartTime = now
+                    if (yawnStartTime == null) {
+                        yawnStartTime = now
+                    }
                 } else {
+                    yawnStartTime?.let { start ->
+                        val duration = (now - start) / 1000f
+
+                        // Only count as yawn if between 1–3 seconds
+                        if (duration in 1f..5f) {
+                            SessionManager.incrementYawn()
+                            SessionManager.logEvent("Yawn Detected (${String.format("%.2f", duration)}s)")
+                        }
+                    }
                     yawnStartTime = null
                 }
+
             }
         )
     }
@@ -465,6 +491,23 @@ fun CameraScreen(navController: NavController) {
             shape = RoundedCornerShape(14.dp)
         ) {
             Text("Session Data")
+        }
+        if (!isCalibrated) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Button(
+                    onClick = {
+                        tiltBaseline = tiltSmoothed
+                        isCalibrated = true
+                    },
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text("Tap to Calibrate")
+                }
+            }
         }
 
         StatusPanel(

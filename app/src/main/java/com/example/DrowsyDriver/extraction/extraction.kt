@@ -166,8 +166,21 @@ class FaceExtractionEngine(
     }
 
     private fun computeHeadTiltRollDeg(pts: List<Pair<Float, Float>>): Float {
-        val (xL,yL)=pts[33]; val (xR,yR)=pts[263]
-        return (atan2((yR-yL),(xR-xL)) * 180f / Math.PI).toFloat()
+        val (xL, yL) = pts[33]   // left eye
+        val (xR, yR) = pts[263]  // right eye
+
+        // Vector from left eye → right eye
+        val dx = xR - xL
+        val dy = yR - yL
+
+        // Angle in degrees (camera space)
+        var angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+
+        // Normalize to [-90, +90] so flipping doesn’t occur
+        if (angle > 90f) angle -= 180f
+        if (angle < -90f) angle += 180f
+
+        return angle
     }
 
     private fun dist(x1:Float,y1:Float,x2:Float,y2:Float) =

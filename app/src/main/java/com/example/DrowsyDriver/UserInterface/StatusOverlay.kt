@@ -61,10 +61,15 @@ fun StatusPanel(
                 modifier              = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                val HEAD_TILT_TH = 15f
+
                 Text(
                     text  = "Head Tilt: ${"%.1f".format(state.headTiltDeg)}°",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White
+                    color = if (kotlin.math.abs(state.headTiltDeg) > HEAD_TILT_TH)
+                        Color(0xFFFF6B6B)
+                    else
+                        Color.White
                 )
                 Text(
                     text  = "EAR: ${"%.2f".format(state.ear)}",
