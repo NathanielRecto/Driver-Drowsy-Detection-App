@@ -13,18 +13,6 @@ import java.nio.ByteOrder
 //   Training label order (Keras alphabetical folder sort):
 //     index 0 → "eyes_closed"
 //     index 1 → "eyes_open"
-//
-//   FIX: previously the code returned  1f - output[0][1]  which equals
-//   output[0][0] only when the two probabilities sum to exactly 1.0 (they
-//   do after softmax, so that arithmetic was fine).  The real problem was
-//   that the caller was passing a *bothEyesBox* crop — a wide landscape
-//   rectangle squished to 224×224 — instead of individual square eye crops.
-//   That crop mismatch is fixed in CameraScreen; the model itself now just
-//   returns P(closed) = output[0][0] directly, which is clearer.
-//
-//   If you ever see the detector fire with eyes wide open, flip the index:
-//   change output[0][0]  →  output[0][1]  (means training folders were
-//   named so that "open" sorts before "closed").
 // ---------------------------------------------------------------------------
 class EyeModel(context: Context) {
 
@@ -37,18 +25,25 @@ class EyeModel(context: Context) {
     private val pixels = IntArray(imgSize * imgSize)
     private val output = Array(1) { FloatArray(2) }
 
+    // Guards tflite.run() and tflite.close() so they never overlap.
+    //
+    // Root cause of SIGSEGV at 0x140: onDispose calls eyeModel.close() which
+    // frees the native TFLite interpreter while the ML loop's
+    // withContext(Dispatchers.Default) is still inside tflite.run() in native
+    // code. tflite.run() then dereferences the freed native struct at offset
+    // 0x140 → SIGSEGV. This is a native crash — try-catch cannot intercept it.
+    //
+    // synchronized(lock) ensures close() blocks until any in-progress run()
+    // finishes, and run() returns immediately (returns 0f) if already closed.
+    private val lock = Any()
+    private var closed = false
+
     init {
         val modelBuffer = FileUtil.loadMappedFile(context, "mnv2_eyes.tflite")
         tflite = Interpreter(modelBuffer)
         Log.d("TFLITE", "Eye model loaded")
     }
 
-    /**
-     * Convert a 224×224 bitmap to a float32 input buffer.
-     * Raw 0-255 values are passed in; the model has a built-in
-     * (x − 127.5) / 127.5  rescaling layer so no manual normalisation
-     * is needed here.
-     */
     private fun bitmapToInputBuffer(bmp: Bitmap): ByteBuffer {
         inputBuffer.rewind()
         bmp.getPixels(pixels, 0, imgSize, 0, 0, imgSize, imgSize)
@@ -62,19 +57,30 @@ class EyeModel(context: Context) {
     }
 
     /**
-     * Returns P(eyes_closed) for a single, square-ish eye crop that has
-     * already been scaled to 224×224 by [cropNormRect].
-     *
-     * output[0][0] = P(eyes_closed)   ← what we return
-     * output[0][1] = P(eyes_open)
+     * Returns P(eyes_closed). Returns 0f immediately if the model is closed.
+     * Thread-safe: synchronized so close() cannot free the interpreter
+     * while run() is executing in native code.
      */
     fun predictClosedProb(bitmap: Bitmap): Float {
-        tflite.run(bitmapToInputBuffer(bitmap), output)
-        Log.d("EYE_DEBUG", "closed=${output[0][0]}  open=${output[0][1]}")
-        return output[0][0]   // P(eyes_closed) directly
+        synchronized(lock) {
+            if (closed) return 0f
+            tflite.run(bitmapToInputBuffer(bitmap), output)
+            Log.d("EYE_DEBUG", "closed=${output[0][0]}  open=${output[0][1]}")
+            return output[0][0]
+        }
     }
 
-    fun close() = tflite.close()
+    /**
+     * Closes the interpreter. Blocks until any in-progress run() finishes
+     * so we never free native memory while inference is running.
+     */
+    fun close() {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            tflite.close()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +98,9 @@ class MouthModel(context: Context) {
         .also { it.order(ByteOrder.nativeOrder()) }
     private val pixels = IntArray(imgSize * imgSize)
     private val output = Array(1) { FloatArray(2) }
+
+    private val lock = Any()
+    private var closed = false
 
     init {
         val modelBuffer = FileUtil.loadMappedFile(context, "mnv2_mouth.tflite")
@@ -111,12 +120,28 @@ class MouthModel(context: Context) {
         return inputBuffer
     }
 
-    /** Returns P(yawn). */
+    /**
+     * Returns P(yawn). Returns 0f immediately if the model is closed.
+     * Thread-safe: synchronized so close() cannot free the interpreter
+     * while run() is executing in native code.
+     */
     fun predictYawnProb(bitmap: Bitmap): Float {
-        tflite.run(bitmapToInputBuffer(bitmap), output)
-        Log.d("MOUTH_MODEL", "normal=${output[0][0]}  yawn=${output[0][1]}")
-        return output[0][1]
+        synchronized(lock) {
+            if (closed) return 0f
+            tflite.run(bitmapToInputBuffer(bitmap), output)
+            Log.d("MOUTH_MODEL", "normal=${output[0][0]}  yawn=${output[0][1]}")
+            return output[0][1]
+        }
     }
 
-    fun close() = tflite.close()
+    /**
+     * Closes the interpreter. Blocks until any in-progress run() finishes.
+     */
+    fun close() {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            tflite.close()
+        }
+    }
 }

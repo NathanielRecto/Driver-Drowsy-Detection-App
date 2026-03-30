@@ -24,12 +24,14 @@ object SessionManager {
     private val _frames       = AtomicInteger(0)
     private val _yawns        = AtomicInteger(0)
     private val _drowsy       = AtomicInteger(0)
+    private val _blinks       = AtomicInteger(0)
     private val _eyeTimeBits  = AtomicLong(0L)   // Float bits
     private val _tiltTimeBits = AtomicLong(0L)   // Float bits
 
     val framesProcessed: Int  get() = _frames.get()
     val yawnCount:       Int  get() = _yawns.get()
     val drowsyEvents:    Int  get() = _drowsy.get()
+    val blinkCount:      Int  get() = _blinks.get()
 
     var totalEyeClosedTime: Float
         get()      = java.lang.Float.intBitsToFloat(_eyeTimeBits.get().toInt())
@@ -69,12 +71,14 @@ object SessionManager {
      * Safe to call from any thread.
      */
     fun incrementYawn()   { _yawns.incrementAndGet() }
+    fun incrementBlink()  { _blinks.incrementAndGet() }
     fun incrementDrowsy() { _drowsy.incrementAndGet() }
 
     fun resetSession() {
         _frames.set(0)
         _yawns.set(0)
         _drowsy.set(0)
+        _blinks.set(0)
         _eyeTimeBits.set(0L)
         _tiltTimeBits.set(0L)
         _events = CopyOnWriteArrayList()   // atomic reference swap
