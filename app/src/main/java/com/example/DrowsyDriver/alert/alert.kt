@@ -8,7 +8,7 @@ import com.example.DrowsyDriver.R
 object Alert {
     private const val CRITICAL_THRESHOLD = 100
     private var lastAlertTime: Long = 0
-    private const val ALERT_COOLDOWN_MS = 10000  // 10 second cooldown between alerts
+    private const val ALERT_COOLDOWN_MS = 5000  // Changed to 5 second cooldown between alerts
     private const val EYE_CLOSED_MS = 1500
     private const val YAWN_MS = 2000L
     private const val TILT_MS = 3000L

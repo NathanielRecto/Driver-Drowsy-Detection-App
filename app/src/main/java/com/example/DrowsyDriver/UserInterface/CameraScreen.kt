@@ -51,7 +51,7 @@ private const val DROWSY_FRAMES_REQUIRED = 4        // consecutive frames before
 private const val EAR_CLOSED_TH        = 0.17f
 private const val EAR_OPEN_TH          = 0.23f
 private const val MAR_YAWN_TH          = 0.50f
-private const val HEAD_TILT_TH         = 15f
+private const val HEAD_TILT_TH         = 30f
 private const val CLOSED_FRAME_TH      = 5         // frames before eyes count as closed
 private const val OPEN_FRAME_TH        = 3         // frames before eyes count as open again
 
@@ -93,11 +93,10 @@ fun CameraScreen(navController: NavController) {
     var leftEyeBox        by remember { mutableStateOf<NormRect?>(null) }
     var rightEyeBox       by remember { mutableStateOf<NormRect?>(null) }
     var mouthBox          by remember { mutableStateOf<NormRect?>(null) }
-    var headTiltDeg by remember { mutableFloatStateOf(0f) }
-    var tiltSmoothed by remember { mutableFloatStateOf(0f) }
-    var isCalibrated by remember { mutableStateOf(false) }
-    var tiltBaseline by remember { mutableFloatStateOf(0f) }
-    var baselineSet by remember { mutableStateOf(false) }
+    var headTiltDeg       by remember { mutableFloatStateOf(0f) }
+    var tiltSmoothed      by remember { mutableFloatStateOf(0f) }
+    var isCalibrated      by remember { mutableStateOf(false) }
+    var tiltBaseline      by remember { mutableFloatStateOf(0f) }
     var lastFaceTimestamp by remember { mutableLongStateOf(0L) }
 
     // ── Session tracking state (EAR-based, feeds SessionManager only) ──────────
@@ -117,46 +116,43 @@ fun CameraScreen(navController: NavController) {
         FaceExtractionEngine(
             context        = context,
             modelAssetPath = "face_landmarker.task",
-            onResult       = { res ->
+            onResult = { res ->
 
-                // ── Image / box state for canvas + ML crop ─────────────────────
-                imageW            = res.imageWidth
-                imageH            = res.imageHeight
-                faceBox           = res.faceBox
-                leftEyeBox        = res.leftEyeBox
-                rightEyeBox       = res.rightEyeBox
-                mouthBox          = res.mouthBox
-                // Smooth
+                // ── Image / box state for canvas + ML crop ─────────────────────────────
+                imageW     = res.imageWidth
+                imageH     = res.imageHeight
+                faceBox    = res.faceBox
+                leftEyeBox = res.leftEyeBox
+                rightEyeBox = res.rightEyeBox
+                mouthBox   = res.mouthBox
+
+                // Smooth raw tilt first
                 tiltSmoothed =
                     if (tiltSmoothed == 0f) res.headTiltDeg
                     else 0.9f * tiltSmoothed + 0.1f * res.headTiltDeg
 
-                // Only calculate tilt AFTER calibration
-                if (isCalibrated) {
-                    headTiltDeg = tiltSmoothed - tiltBaseline
-                } else {
-                    headTiltDeg = 0f
-                }
+                // Use calibrated tilt after the user taps calibrate
+                headTiltDeg =
+                    if (isCalibrated) tiltSmoothed - tiltBaseline
+                    else 0f
+
                 lastFaceTimestamp = System.currentTimeMillis()
 
-                // Feature-extraction values shown in the overlay (status is set
-                // by the ML inference loop below, not here).
+                // Show calibrated tilt in the UI
                 uiState.value = uiState.value.copy(
-                    headTiltDeg = res.headTiltDeg,
-                    ear         = res.ear,
-                    mar         = res.mar
+                    headTiltDeg = headTiltDeg,
+                    ear = res.ear,
+                    mar = res.mar
                 )
 
-                // ── EAR smoothing (exponential moving average) ─────────────────
+                // ── EAR smoothing ───────────────────────────────────────────────────────
                 earSmoothed =
                     if (earSmoothed == 0f) res.ear
                     else 0.90f * earSmoothed + 0.10f * res.ear
 
                 val now = System.currentTimeMillis()
 
-                // ── Frame-based eye open/close confirmation ────────────────────
-                // Using hysteresis (two separate thresholds) avoids rapid toggling
-                // at the boundary.
+                // ── Frame-based eye open/close confirmation ────────────────────────────
                 if (earSmoothed < EAR_CLOSED_TH) {
                     closedFrameCount++
                     openFrameCount = 0
@@ -164,76 +160,66 @@ fun CameraScreen(navController: NavController) {
                     openFrameCount++
                     closedFrameCount = 0
                 }
+
                 if (!eyesAreClosed && closedFrameCount >= CLOSED_FRAME_TH) eyesAreClosed = true
                 if ( eyesAreClosed && openFrameCount  >= OPEN_FRAME_TH)   eyesAreClosed = false
 
-                // ── Eye-closed duration → SessionManager ───────────────────────
+                // ── Eye-closed duration → SessionManager ───────────────────────────────
                 if (eyesAreClosed) {
-                    if (eyesClosedStartTime == null) eyesClosedStartTime = now
+                    if (eyesClosedStartTime == null) {
+                        eyesClosedStartTime = now
+                        SessionManager.logEvent("Eyes Closed Started")
+                    }
                 } else {
                     eyesClosedStartTime?.let { start ->
-                        SessionManager.totalEyeClosedTime = SessionManager.totalEyeClosedTime + (now - start) / 1000f
+                        val duration = (now - start) / 1000f
+                        SessionManager.totalEyeClosedTime += duration
+                        SessionManager.logEvent("Eyes Opened (${String.format("%.2f", duration)}s closed)")
                     }
                     eyesClosedStartTime = null
                 }
 
-                // ── Head-tilt duration → SessionManager ────────────────────────
-                if (abs(res.headTiltDeg) > HEAD_TILT_TH) {
-                    if (headTiltStartTime == null) headTiltStartTime = now
+                // ── Head-tilt duration → SessionManager ────────────────────────────────
+                // IMPORTANT: use calibrated headTiltDeg here, not res.headTiltDeg
+                if (abs(headTiltDeg) > HEAD_TILT_TH) {
+                    if (headTiltStartTime == null) {
+                        headTiltStartTime = now
+                        SessionManager.logEvent("Head Tilt Started")
+                    }
                 } else {
                     headTiltStartTime?.let { start ->
-                        SessionManager.totalHeadTiltTime = SessionManager.totalHeadTiltTime + (now - start) / 1000f
+                        val duration = (now - start) / 1000f
+                        SessionManager.totalHeadTiltTime += duration
+                        SessionManager.logEvent("Head Tilt Ended (${String.format("%.2f", duration)}s)")
                     }
                     headTiltStartTime = null
                 }
 
-                // ── Frame counter ──────────────────────────────────────────────
+                // ── Frame counter ──────────────────────────────────────────────────────
                 SessionManager.incrementFrame()
 
-                // ── Yawn detection (duration-based) ───────────────────────
-                // Only counts after MAR stays above threshold for 1500ms.
-                // Rising-edge counting fired on any brief mouth open (talking,
-                // coughing). Now the mouth must stay open for a full yawn duration.
+                // ── Yawn detection ─────────────────────────────────────────────────────
                 val isYawning = res.mar > MAR_YAWN_TH
                 if (isYawning) {
                     if (yawnStartTime == null) yawnStartTime = now
-
-                val isCurrentlyYawning = res.mar > MAR_YAWN_TH
-
-                if (isCurrentlyYawning) {
-                    if (yawnStartTime == null) {
-                        yawnStartTime = now
-                    }
                 } else {
                     yawnStartTime?.let { start ->
-                        if (now - start >= 1500L) {
+                        val durationMs = now - start
+                        if (durationMs in 1500L..5000L) {
                             SessionManager.incrementYawn()
-                            SessionManager.logEvent("Yawn Detected")
-                        }
-                    }
-                    yawnStartTime?.let { start ->
-                        val duration = (now - start) / 1000f
-
-                        // Only count as yawn if between 1–3 seconds
-                        if (duration in 1f..5f) {
-                            SessionManager.incrementYawn()
-                            SessionManager.logEvent("Yawn Detected (${String.format("%.2f", duration)}s)")
+                            SessionManager.logEvent("Yawn Detected (${String.format("%.2f", durationMs/1000f)}s)")
                         }
                     }
                     yawnStartTime = null
                 }
 
-                // ── Blink detection ────────────────────────────────────────────
-                // Uses raw EAR threshold crossings directly — faster than
-                // eyesAreClosed which needs 5+3 confirmation frames and misses
-                // most blinks before they complete.
+                // ── Blink detection ────────────────────────────────────────────────────
                 if (res.ear < EAR_CLOSED_TH) {
                     blinkEarDown = true
                 } else if (blinkEarDown) {
                     blinkEarDown = false
                     SessionManager.incrementBlink()
                 }
-
             }
         )
     }
@@ -290,14 +276,35 @@ fun CameraScreen(navController: NavController) {
             val reb  = if (facePresent) rightEyeBox else null
             val tilt = headTiltDeg
 
-            // Reset immediately when face disappears
-            if (!facePresent && drowsyFrames > 0) {
-                drowsyFrames  = 0
-                wasDrowsy     = false
+            // Reset everything when face disappears
+            if (!facePresent) {
+                drowsyFrames        = 0
+                wasDrowsy           = false
+                isDrowsy            = false
+                eyesAreClosed       = false
+                closedFrameCount    = 0
+                openFrameCount      = 0
+                earSmoothed         = 0f
+                eyesClosedStartTime = null
+                headTiltStartTime   = null
+                yawnStartTime       = null
+                blinkEarDown        = false
+
+                // Clear face boxes and tilt state
+                faceBox             = null
+                leftEyeBox          = null
+                rightEyeBox         = null
+                mouthBox            = null
+                headTiltDeg         = 0f
+                tiltSmoothed        = 0f
+
                 uiState.value = uiState.value.copy(
-                    status   = "Normal",
-                    eyeProb  = 0f,
-                    yawnProb = 0f
+                    status      = "Normal",
+                    eyeProb     = 0f,
+                    yawnProb    = 0f,
+                    ear         = 0f,
+                    mar         = 0f,
+                    headTiltDeg = 0f
                 )
             }
 
@@ -343,7 +350,7 @@ fun CameraScreen(navController: NavController) {
                         }
                     }
 
-                    // ── Drowsy decision ────────────────────────────────────────
+                    // ── Drowsy decision (ML only — status set by alert section) ──
                     drowsyFrames = if (eyeClosed || mouthYawn) drowsyFrames + 1 else 0
                     isDrowsy = drowsyFrames >= DROWSY_FRAMES_REQUIRED
                     val label    = if (isDrowsy) "Drowsy" else "Normal"
@@ -354,6 +361,8 @@ fun CameraScreen(navController: NavController) {
                     }
                     wasDrowsy = isDrowsy
 
+                    // Only update probabilities here — status label is owned
+                    // by the alert LaunchedEffect so it never gets overwritten.
                     uiState.value = uiState.value.copy(
                         status   = label,
                         eyeProb  = eyeProb,
@@ -371,8 +380,6 @@ fun CameraScreen(navController: NavController) {
     //--- Alert section
     LaunchedEffect(uiState.value, isDrowsy, headTiltStartTime, yawnStartTime, eyesClosedStartTime) {
         val now = System.currentTimeMillis()
-
-        // Calculate how long these states have been active
         val eyeClosedDuration = eyesClosedStartTime?.let { now - it } ?: 0L
         val headTiltDuration  = headTiltStartTime?.let { now - it } ?: 0L
         val yawnDuration      = yawnStartTime?.let { now - it } ?: 0L
