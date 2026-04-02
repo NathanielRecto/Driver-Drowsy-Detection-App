@@ -111,6 +111,7 @@ fun CameraScreen(navController: NavController) {
     var isAlerting by remember { mutableStateOf(false) }
     var isDrowsy by remember { mutableStateOf(false) } // used for alert
     var yawnStartTime by remember { mutableStateOf<Long?>(null) } // not being logged
+    val yawnTimestamps = remember { mutableListOf<Long>() }
     // ── FaceExtractionEngine ───────────────────────────────────────────────────
     val engine = remember(context) {
         FaceExtractionEngine(
@@ -208,6 +209,8 @@ fun CameraScreen(navController: NavController) {
                         if (durationMs in 1500L..5000L) {
                             SessionManager.incrementYawn()
                             SessionManager.logEvent("Yawn Detected (${String.format("%.2f", durationMs/1000f)}s)")
+
+                            yawnTimestamps.add(now) // used for calculating yawn rate
                         }
                     }
                     yawnStartTime = null
@@ -380,12 +383,12 @@ fun CameraScreen(navController: NavController) {
         val now = System.currentTimeMillis()
         val eyeClosedDuration = eyesClosedStartTime?.let { now - it } ?: 0L
         val headTiltDuration  = headTiltStartTime?.let { now - it } ?: 0L
-        val yawnDuration      = yawnStartTime?.let { now - it } ?: 0L
-
+        yawnTimestamps.removeAll { it < now - 60000L }
+        val yawnRate = yawnTimestamps.size
         val shouldAlert = Alert.checkAlert(
             eyeClosedDuration = eyeClosedDuration,
             isDrowsy          = (isDrowsy),
-            yawnDuration      = yawnDuration,
+            yawnRate      = yawnRate,
             headTiltDuration  = headTiltDuration
         )
         if (shouldAlert) {

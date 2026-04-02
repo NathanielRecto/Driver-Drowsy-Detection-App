@@ -10,28 +10,28 @@ object Alert {
     private var lastAlertTime: Long = 0
     private const val ALERT_COOLDOWN_MS = 5000  // Changed to 5 second cooldown between alerts
     private const val EYE_CLOSED_MS = 1500
-    private const val YAWN_MS = 2000L
     private const val TILT_MS = 3000L
     private var mediaPlayer: MediaPlayer? = null
-    fun checkAlert(eyeClosedDuration: Long, isDrowsy: Boolean, yawnDuration: Long,headTiltDuration: Long): Boolean {
+    fun checkAlert(eyeClosedDuration: Long, isDrowsy: Boolean, yawnRate: Int,headTiltDuration: Long): Boolean {
         var currentScore = 0
         // 1. Eyes Closed
         if (eyeClosedDuration >= EYE_CLOSED_MS) {
             currentScore += 70
             // If eyes are closed for long period of time force an immediate 100
-            if (eyeClosedDuration > 3000) currentScore += 30
+            if (eyeClosedDuration > 2000) currentScore += 30
         }
         // 2. ML Inference
         if (isDrowsy) {
             currentScore += 40
         }
-        // 3. Yawning
-        if (yawnDuration >= YAWN_MS) {
+        // 3. Yawn rate (per min)
+        if (yawnRate > 0) {
             currentScore += 30
+            if (yawnRate > 1) currentScore += 30;
         }
         // 4. Head Tilting
         if (headTiltDuration >= TILT_MS) {
-            currentScore += 30
+            currentScore += 40
         }
         // Return true if the combined score hits the threshold
         Log.d("ALERT_SYSTEM", "Current Drowsiness Score: $currentScore")
