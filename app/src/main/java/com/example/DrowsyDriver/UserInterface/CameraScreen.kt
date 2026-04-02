@@ -51,7 +51,7 @@ private const val DROWSY_FRAMES_REQUIRED = 4        // consecutive frames before
 private const val EAR_CLOSED_TH        = 0.17f
 private const val EAR_OPEN_TH          = 0.23f
 private const val MAR_YAWN_TH          = 0.50f
-private const val HEAD_TILT_TH         = 30f
+private const val HEAD_TILT_TH         = 15f
 private const val CLOSED_FRAME_TH      = 5         // frames before eyes count as closed
 private const val OPEN_FRAME_TH        = 3         // frames before eyes count as open again
 
@@ -108,7 +108,7 @@ fun CameraScreen(navController: NavController) {
     var headTiltStartTime    by remember { mutableStateOf<Long?>(null) }
     var blinkEarDown         by remember { mutableStateOf(false) }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-
+    var isAlerting by remember { mutableStateOf(false) }
     var isDrowsy by remember { mutableStateOf(false) } // used for alert
     var yawnStartTime by remember { mutableStateOf<Long?>(null) } // not being logged
     // ── FaceExtractionEngine ───────────────────────────────────────────────────
@@ -289,7 +289,7 @@ fun CameraScreen(navController: NavController) {
                 headTiltStartTime   = null
                 yawnStartTime       = null
                 blinkEarDown        = false
-
+                isAlerting          = false
                 // Clear face boxes and tilt state
                 faceBox             = null
                 leftEyeBox          = null
@@ -353,23 +353,21 @@ fun CameraScreen(navController: NavController) {
                     // ── Drowsy decision (ML only — status set by alert section) ──
                     drowsyFrames = if (eyeClosed || mouthYawn) drowsyFrames + 1 else 0
                     isDrowsy = drowsyFrames >= DROWSY_FRAMES_REQUIRED
-                    val label    = if (isDrowsy) "Drowsy" else "Normal"
 
                     if (isDrowsy && !wasDrowsy) {
                         SessionManager.incrementDrowsy()
-                        SessionManager.logEvent("Drowsiness Detected")
+                        SessionManager.logEvent("Drowsiness Detected by model")
                     }
                     wasDrowsy = isDrowsy
 
                     // Only update probabilities here — status label is owned
                     // by the alert LaunchedEffect so it never gets overwritten.
                     uiState.value = uiState.value.copy(
-                        status   = label,
                         eyeProb  = eyeProb,
                         yawnProb = yawnProb
                     )
 
-                    Log.d("ML", "eye=$eyeProb closed=$eyeClosed yawn=$yawnProb mouth=$mouthYawn frames=$drowsyFrames → $label")
+                    Log.d("ML", "eye=$eyeProb closed=$eyeClosed yawn=$yawnProb mouth=$mouthYawn")
                 }
             }
 
@@ -386,12 +384,27 @@ fun CameraScreen(navController: NavController) {
 
         val shouldAlert = Alert.checkAlert(
             eyeClosedDuration = eyeClosedDuration,
-            isDrowsy          = (isDrowsy), // ML trigger
-            yawnDuration      = yawnDuration,                       // Feature extraction trigger
-            headTiltDuration  = headTiltDuration                    // Feature extraction trigger
+            isDrowsy          = (isDrowsy),
+            yawnDuration      = yawnDuration,
+            headTiltDuration  = headTiltDuration
         )
         if (shouldAlert) {
-            Alert.triggerAlert(context)
+            uiState.value = uiState.value.copy(status = "Drowsy")
+            if (!isAlerting || Alert.canReplay()) {
+                Alert.triggerAlert(context)
+
+                // Log the event only when the alert first starts
+                if (!isAlerting) {
+                    SessionManager.incrementDrowsy()
+                    SessionManager.logEvent("Drowsiness detected, alarm triggered.")
+                    Alert.triggerAlert(context)
+                    isAlerting = true
+                }
+            }
+        }
+        else {
+            uiState.value = uiState.value.copy(status = "Normal")
+            isAlerting = false
         }
     }
 

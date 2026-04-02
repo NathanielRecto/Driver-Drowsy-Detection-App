@@ -59,4 +59,11 @@ object Alert {
             }
         }
     }
+    // lets the UI know it can trigger another alert after the if user is still drowsy after the initial alert
+    fun canReplay(): Boolean {
+        val now = System.currentTimeMillis()
+        val cooldownFinished = (now - lastAlertTime) >= ALERT_COOLDOWN_MS
+        val audioFinished = mediaPlayer?.isPlaying == false
+        return cooldownFinished && audioFinished
+    }
 }
