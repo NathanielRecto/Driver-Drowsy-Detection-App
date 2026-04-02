@@ -74,7 +74,7 @@ fun StatusPanel(
                 Text(
                     text  = "EAR: ${"%.2f".format(state.ear)}",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (state.ear < 0.10f) Color(0xFFFF6B6B) else Color.White
+                    color = if (state.ear < 0.17f) Color(0xFFFF6B6B) else Color.White
                 )
             }
 
