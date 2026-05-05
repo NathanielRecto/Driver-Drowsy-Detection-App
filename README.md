@@ -14,18 +14,20 @@ This project was developed for the **Computer/Electrical Engineering Capstone De
 ## Demo
 
 <!-- Recommended image: README_assets/demo.gif -->
-![Demo of the Android drowsiness detection app](README_assets/demo.gif)
+![Normal monitoring demo](app/src/main/assets/demo1.png)
 
-The app uses the Android front-facing camera to monitor driver behaviour in real time. It detects fatigue-related cues such as eye closure, yawning, and head tilt. When the combined drowsiness score reaches the alert threshold, the app changes the driver status and triggers an alarm.
+![Drowsy detection demo](app/src/main/assets/demo2.png)
+
+The app uses the Android front-facing camera to monitor driver behaviour in real time. It detects fatigue-related cues such as eye closure, yawning, and head tilt. When the combined drowsiness score reaches the alert threshold, the app changes the status and triggers an alarm.
 
 ## Motivation
 
-Driver fatigue is a road-safety issue because it reduces awareness, slows reaction time, and increases collision risk. Traditional approaches such as lane tracking, steering behaviour, or wearable sensors can be delayed, intrusive, or impractical for daily use. This project uses a non-intrusive camera-based approach that can run directly on an Android phone.
+Driver fatigue is a road-safety issue because it reduces awareness, slows reaction time, and increases the risk of collisions. Traditional approaches such as lane tracking, steering behaviour, or wearable sensors can be delayed, intrusive, or impractical for daily use. This project uses a non-intrusive, camera-based approach that runs directly on an Android phone.
 
 ## Custom Dataset
 
 <!-- Recommended image: README_assets/dataset_samples.png -->
-![Custom dataset samples](README_assets/dataset_samples.png)
+![Custom dataset samples](app/src/main/assets/dataset_samples.png)
 
 A custom MediaPipe-based data collection tool was created to crop and label eye and mouth regions from live camera input. The dataset was organized into four class folders:
 
@@ -51,7 +53,7 @@ Final dataset size:
 ## How It Works
 
 <!-- Recommended image: README_assets/system_pipeline.png -->
-![System pipeline](README_assets/system_pipeline.png)
+![System pipeline](app/src/main/assets/system_pipeline.png)
 
 The system uses a hybrid detection pipeline:
 
@@ -73,13 +75,13 @@ The system uses a hybrid detection pipeline:
 ## App Screens
 
 <!-- Recommended image: README_assets/app_screens.png -->
-![Android app screens](README_assets/app_screens.png)
+![Android app screens](app/src/main/assets/app_screens.png)
 
 The Android application includes a start screen, real-time camera screen, head tilt calibration, drowsy alert display, and session analytics screen. The session screen records frames processed, eye-closed duration, head-tilt duration, blink count, yawn count, and drowsy events.
 
 ## Performance Summary
 
-The two MobileNetV2-based models were trained using the custom cropped dataset and converted to TensorFlow Lite for Android deployment.
+The two MobileNetV2-based models were trained using the custom-cropped dataset and converted to TensorFlow Lite for Android deployment.
 
 | Model | Accuracy | Precision | Recall |
 |---|---:|---:|---:|
@@ -87,7 +89,7 @@ The two MobileNetV2-based models were trained using the custom cropped dataset a
 | Yawn Detection Model | 96.18% | 0.99 | 0.90 |
 
 <!-- Recommended image: README_assets/confusion_matrices.png -->
-![Model confusion matrices](README_assets/confusion_matrices.png)
+![Model confusion matrices](app/src/main/assets/confusion_matrices.png)
 
 The full Android system was tested using four behaviour cases across four operating conditions.
 
