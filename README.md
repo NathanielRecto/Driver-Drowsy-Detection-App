@@ -14,9 +14,10 @@ This project was developed for the **Computer/Electrical Engineering Capstone De
 ## Demo
 
 <!-- Recommended image: README_assets/demo.gif -->
-![Normal monitoring demo](app/src/main/assets/demo1.png)
-
-![Drowsy detection demo](app/src/main/assets/demo2.png)
+<p align="left">
+  <img src="app/src/main/assets/demo1.png" alt="Normal monitoring demo" width="25%">
+  <img src="app/src/main/assets/demo2.png" alt="Drowsy detection demo" width="26.7%">
+</p>
 
 The app uses the Android front-facing camera to monitor driver behaviour in real time. It detects fatigue-related cues such as eye closure, yawning, and head tilt. When the combined drowsiness score reaches the alert threshold, the app changes the status and triggers an alarm.
 
